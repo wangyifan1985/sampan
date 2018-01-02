@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
+"""
+Sampan is a toolkit for web applications. It
+offers python json mapping and other tools.
+
+Copyright (c) 2017, The Sampan Authors.
+"""
 
 import platform
 
@@ -12,6 +18,6 @@ __status__ = "Internal"
 
 
 if platform.python_version_tuple() < ('3', '6') or platform.python_implementation() != 'CPython':
-    raise RuntimeError('Python version 3.6+ is required.')
+    raise RuntimeError('CPython version 3.6+ is required.')
 
 
