@@ -20,8 +20,13 @@ setup(name='sampan',
       long_description=sampan.__doc__,
       author=sampan.__author__,
       author_email='yifan_wang@silanis.com',
+<<<<<<< HEAD
       url='https://github.com/wangyifan1985/sampan',
       packages=['sampan'],
+=======
+      url='https://github.com/wangyifan1985/sampanweb',
+      packages=['sampan', 'sampan.json'],
+>>>>>>> remotes/origin/master
       license='MIT',
       platforms='any',
       classifiers=['Development Status :: 4 - Beta',
@@ -33,4 +38,8 @@ setup(name='sampan',
                    'Programming Language :: Python :: 3.6'
                    'Topic :: Internet :: WWW/HTTP :: Dynamic Content',
                    'Topic :: Software Development :: Libraries :: Python Modules']
+<<<<<<< HEAD
 )
+=======
+      )
+>>>>>>> remotes/origin/master
