@@ -2,17 +2,15 @@
 # coding: utf-8
 
 
-import platform
-
 try:
     from setuptools import setup
 except ImportError:
     from distutils.core import setup
 
-if platform.python_version_tuple() < ('3', '6') or platform.python_implementation() != 'CPython':
-    raise RuntimeError('CPython version 3.6+ is required.')
 
 import sampan
+sampan.check_environment()
+
 
 setup(name='sampan',
       version=sampan.__version__,
