@@ -4,8 +4,8 @@
 import argparse
 import copy
 import sys
+from . import __version__
 from .util import to_dict, is_ipv4, is_ipv6, get_ip
-from sysdev.tools.common.sampan import __version__
 
 __all__ = ['serve']
 

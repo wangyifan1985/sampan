@@ -182,8 +182,6 @@ log = get_logger(__name__)
 DEFAULT_AUTO_ESCAPE = 'html_escape'
 DEFAULT_STRING_NAME = '<string>'
 
-
-###############################################################################
 # Errors ######################################################################
 ###############################################################################
 class TemplateError(SampanError):
@@ -204,7 +202,7 @@ class TemplateError(SampanError):
     def __str__(self):
         return '%s at %s:%d' % (self.message, self.filename, self.lineno)
 
-###############################################################################
+
 # Template ####################################################################
 ###############################################################################
 class Template:
@@ -219,6 +217,12 @@ class Template:
         self.code = self._generate_python(loader)
         self.loader = loader
         self.compiled = compile(self.code, '{}.gen.py'.format(self.name.replace('.', '_')), 'exec', dont_inherit=True)
+
+    @staticmethod
+    def exec_in(code, glob, loc=None):
+        if isinstance(code, str):
+            code = compile(code, '<string>', 'exec', dont_inherit=True)
+        exec(code, glob, loc)
 
     def generate(self, **kwargs):
         namespace = {

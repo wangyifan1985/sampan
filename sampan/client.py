@@ -10,8 +10,6 @@ from urllib import parse
 from http import client
 
 
-__description__ = 'A universal rest client'
-
 __all__ = ['BasicAuthentication', 'RestClient']
 
 

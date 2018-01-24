@@ -17,26 +17,13 @@ from functools import wraps
 from threading import local
 
 __all__ = [
-    'get_project_path', 'exec_in', 'to_str', 'to_bytes', 'to_dict', 'is_ipv4', 'is_ipv6', 'is_port', 'get_ip',
+    'exec_in', 'to_str', 'to_bytes', 'to_dict', 'is_ipv4', 'is_ipv6', 'is_port', 'get_ip',
     'json_dumps', 'json_loads', 'get_file_size', 'squeeze'
 ]
 
 
-
-
+# Functions ###################################################################
 ###############################################################################
-# functions
-###############################################################################
-def get_project_path():
-    return os.path.dirname(__file__)
-
-
-def exec_in(code, glob, loc=None):
-    if isinstance(code, str):
-        code = compile(code, '<string>', 'exec', dont_inherit=True)
-    exec(code, glob, loc)
-
-
 def is_ipv4(address):
     _count = address.count(':')
     if _count == 0:
@@ -164,14 +151,6 @@ def timeout(max_timeout):
     return timeout_decorator
 
 
-def reverse_dict(obj):
-    """
-    Swap key and value in dict
-    :param obj: dict
-    :return: dict
-    """
-    return dict(zip(obj.values, obj.keys()))
-
 
 def find_dict_key(obj, val):
     """
@@ -209,16 +188,6 @@ def add_dict(*dicts):
     for _dict in dicts:
         result.update(_dict)
     return result
-
-
-def group_list(obj, size):
-    """
-    Group element in list by size
-    :param obj: list
-    :param size: group size
-    :return:
-    """
-    return [tuple(obj[i: i + size]) for i in range(0, len(obj), size)]
 
 
 def format_urls(obj):
@@ -392,9 +361,9 @@ def capture_output(func):
     return func_wrapper
 
 
-def squeeze(obj):
+def squeeze(s):
     """Replace all sequences of whitespace chars with a single space."""
-    return re.sub(r"[\x00-\x20]+", " ", obj).strip()
+    return re.sub(r"[\x00-\x20]+", " ", s).strip()
 
 
 ###############################################################################
