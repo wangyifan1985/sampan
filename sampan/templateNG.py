@@ -6,13 +6,24 @@ A tiny template system
 """
 
 import re
-import datetime
 import typing
+import datetime
+import linecache
+import threading
+from io import StringIO
 from enum import Enum
 from html import escape
 from urllib.parse import quote
 from json import dumps
-from . import SampanError
+from . import SampanError, ENCODING
+from .util import to_str
+
+__all__ = ['Template', 'TemplateError', 'Tag', 'Node']
+
+# Constants ###################################################################
+###############################################################################
+INDENT = 4
+STRING_NAME = '<string>'
 
 
 # Errors ######################################################################
@@ -85,42 +96,88 @@ class _Reader:
             return self.s[self.pos + key]
 
 
+class _Writer(object):
+    def __init__(self, file, named_blocks, loader, current_template):
+        self.file = file
+        self.named_blocks = named_blocks
+        self.loader = loader
+        self.current_template = current_template
+        self.apply_counter = 0
+        self.include_stack = []
+        self._indent = 0
+
+    def indent_size(self):
+        return self._indent
+
+    def indent(self):
+        class Indenter(object):
+            def __enter__(_):
+                self._indent += 1
+                return self
+
+            def __exit__(_, *args):
+                assert self._indent > 0
+                self._indent -= 1
+
+        return Indenter()
+
+    def include(self, template, line):
+        self.include_stack.append((self.current_template, line))
+        self.current_template = template
+
+        class IncludeTemplate(object):
+            def __enter__(_):
+                return self
+
+            def __exit__(_, *args):
+                self.current_template = self.include_stack.pop()[0]
+
+        return IncludeTemplate()
+
+    def write_line(self, line, line_number, indent=None):
+        if indent is None:
+            indent = self._indent
+        line_comment = '  # %s:%d' % (self.current_template.name, line_number)
+        if self.include_stack:
+            ancestors = ['%s:%d' % (tmpl.name, lineno)
+                         for (tmpl, lineno) in self.include_stack]
+            line_comment += ' (via %s)' % ', '.join(reversed(ancestors))
+        print('    ' * indent + line + line_comment, file=self.file)
+
+
 class Tag(Enum):
     COMMENT = ('{#', '#}')
     EXPRESSION = ('{{', '}}')
     STATEMENT = ('{%', '%}')
 
 
-class _Parser:
-    def __init__(self):
-        self.parsers = {}
-
-    def register(self, tag: Tag, key: str, func: typing.Callable):
-        self.parsers[(tag, key)] = func
+class Node:
+    def generate(self, writer):
+        raise NotImplementedError()
 
 
 class Template:
-    _parser = _Parser()
+    _parsers = {}
 
     @classmethod
-    def parser(cls, tag: Tag, key: str=None):
-        def wrapper(func):
-            cls._parser.register(tag, key, func)
-            return func
+    def parser(cls, tag: Tag, key: str):
+        def wrapper(node: typing.Type[Node]):
+            cls._parsers[(tag, key)] = node
+
+            def wrapped(*args, **kwargs):
+                return node(*args, **kwargs)
+            return wrapped
         return wrapper
 
-    @staticmethod
-    def comment_retain():
-        print('retain comment')
-
     def __new__(cls, template):
-        cls._parser.register(Tag.COMMENT, 'retain', cls.comment_retain)
         return super(Template, cls).__new__(cls)
 
     def __init__(self, template: str):
+        self.chunks = {}
         self.template = template
-        self.chunks = dict()
+        self.lock = threading.RLock()
         self.namespace = {
+            '_tt_str': lambda s: s.decode(ENCODING) if isinstance(s, bytes) else str(s, ENCODING),
             'escape': escape,
             'html_escape': escape,
             'url_escape': quote,
@@ -129,7 +186,34 @@ class Template:
             'datetime': datetime
         }
 
+    def parse(self, reader: _Reader, writer: _Writer):
+        pass
 
-@Template.parser(Tag.COMMENT, 'ignore')
-def comment_ignore():
-    print('ignore comment')
+    def generate(self, **kwargs):
+        buffer = StringIO()
+        reader = _Reader(self.template)
+        writer = _Writer(buffer)
+        self.parse(reader, writer)
+        self.namespace.update(**kwargs)
+        exec(buffer.getvalue(), self.namespace, None)
+        execute = self.namespace['_tt_execute']
+        linecache.clearcache()
+        return execute()
+
+
+class _Root(Node):
+    def __init__(self, template, body):
+        self.template = template
+        self.body = body
+        self.line = 0
+
+    def generate(self, writer):
+        writer.write_line('def _tt_execute():', self.line)
+        with writer.indent():
+            writer.write_line('_tt_buffer = []', self.line)
+            writer.write_line('_tt_append = _tt_buffer.append', self.line)
+            self.body.generate(writer)
+            writer.write_line("return _tt_utf8('').join(_tt_buffer)", self.line)
+
+    def each_child(self):
+        return self.body,
