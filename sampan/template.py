@@ -172,7 +172,7 @@ from html import escape
 from urllib.parse import quote
 from . import SampanError
 from .log import get_logger
-from .util import ObjectDict, exec_in, to_str, json_dumps, squeeze
+from .util import ObjectDict, to_str, json_dumps, squeeze
 
 
 __all__ = ['Template', 'TemplateError', 'StringLoader', 'FileLoader']
@@ -181,6 +181,7 @@ __all__ = ['Template', 'TemplateError', 'StringLoader', 'FileLoader']
 log = get_logger(__name__)
 DEFAULT_AUTO_ESCAPE = 'html_escape'
 DEFAULT_STRING_NAME = '<string>'
+
 
 # Errors ######################################################################
 ###############################################################################
@@ -241,7 +242,7 @@ class Template:
         }
         namespace.update(self.namespace)
         namespace.update(kwargs)
-        exec_in(self.compiled, namespace)
+        self.exec_in(self.compiled, namespace)
         execute = namespace['_tt_execute']
         # Clear the traceback module's cache of source data now that
         # we've generated a new template (mainly for this module's

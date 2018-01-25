@@ -97,10 +97,9 @@ class _Reader:
 
 
 class _Writer(object):
-    def __init__(self, file, named_blocks, loader, current_template):
+    def __init__(self, file: typing.IO, named_blocks, current_template):
         self.file = file
         self.named_blocks = named_blocks
-        self.loader = loader
         self.current_template = current_template
         self.apply_counter = 0
         self.include_stack = []
@@ -134,15 +133,10 @@ class _Writer(object):
 
         return IncludeTemplate()
 
-    def write_line(self, line, line_number, indent=None):
+    def write_line(self, line, indent=None):
         if indent is None:
             indent = self._indent
-        line_comment = '  # %s:%d' % (self.current_template.name, line_number)
-        if self.include_stack:
-            ancestors = ['%s:%d' % (tmpl.name, lineno)
-                         for (tmpl, lineno) in self.include_stack]
-            line_comment += ' (via %s)' % ', '.join(reversed(ancestors))
-        print('    ' * indent + line + line_comment, file=self.file)
+        print('    ' * indent + line, file=self.file)
 
 
 class Tag(Enum):
@@ -152,7 +146,12 @@ class Tag(Enum):
 
 
 class Node:
-    def generate(self, writer):
+    writer = None
+
+    def __init__(self, writer: _Writer):
+        self.writer = writer
+
+    def generate(self):
         raise NotImplementedError()
 
 
@@ -169,12 +168,13 @@ class Template:
             return wrapped
         return wrapper
 
-    def __new__(cls, template):
+    def __new__(cls, s):
         return super(Template, cls).__new__(cls)
 
-    def __init__(self, template: str):
-        self.chunks = {}
-        self.template = template
+    def __init__(self, s: str):
+        self.raw = s
+        self.cache = {}
+        self.buffer = StringIO()
         self.lock = threading.RLock()
         self.namespace = {
             '_tt_str': lambda s: s.decode(ENCODING) if isinstance(s, bytes) else str(s, ENCODING),
@@ -186,34 +186,199 @@ class Template:
             'datetime': datetime
         }
 
-    def parse(self, reader: _Reader, writer: _Writer):
-        pass
+    def parse(self, reader: _Reader, writer: _Writer) -> _Root:
+        root = _Root(writer)
+        while True:
+            # Find next template directive
+            curly = 0
+            while True:
+                curly = reader.find('{', curly)
+                if curly == -1 or curly + 1 == reader.remaining():
+                    # EOF
+                    if in_block:
+                        msg = 'Missing end block for {}'.format(in_block)
+                        raise TemplateError(msg, template.name, reader.line)
+                    body.chunks.append(_Text(reader.consume(), reader.line))
+                    return body
+                # If the first curly brace is not the start of a special token,
+                # start searching from the character after it
+                if reader[curly + 1] not in ('{', '%', '#'):
+                    curly += 1
+                    continue
+                # When there are more than 2 curlies in a row, use the
+                # innermost ones.  This is useful when generating languages
+                # like latex where curlies are also meaningful
+                if curly + 2 < reader.remaining() and reader[curly + 1] == '{' and reader[curly + 2] == '{':
+                    curly += 1
+                    continue
+                break
 
-    def generate(self, **kwargs):
-        buffer = StringIO()
-        reader = _Reader(self.template)
-        writer = _Writer(buffer)
-        self.parse(reader, writer)
-        self.namespace.update(**kwargs)
-        exec(buffer.getvalue(), self.namespace, None)
-        execute = self.namespace['_tt_execute']
-        linecache.clearcache()
-        return execute()
+            # Append any text before the special token
+            if curly > 0:
+                cons = reader.consume(curly)
+                body.chunks.append(_Text(cons, reader.line))
+
+            start_brace = reader.consume(2)
+            line = reader.line
+
+            # Template directives may be escaped as '{{!' or '{%!'.
+            # In this case output the braces and consume the '!'.
+            # This is especially useful in conjunction with jquery templates,
+            # which also use double braces.
+            if reader.remaining() and reader[0] == '!':
+                reader.consume(1)
+                body.chunks.append(_Text(start_brace, line))
+                continue
+
+            # Comment
+            if start_brace == '{#':
+                end = reader.find('#}')
+                if end == -1:
+                    raise TemplateError('Missing end comment #}', template.name, reader.line)
+                _ = reader.consume(end).strip()
+                reader.consume(2)
+                continue
+
+            # Expression
+            if start_brace == '{{':
+                end = reader.find('}}')
+                if end == -1:
+                    raise TemplateError('Missing end expression }}', template.name, reader.line)
+                contents = reader.consume(end).strip()
+                reader.consume(2)
+                if not contents:
+                    raise TemplateError('Empty expression', template.name, reader.line)
+                body.chunks.append(_Expression(contents, line))
+                continue
+
+            # Block
+            assert start_brace == '{%', start_brace
+            end = reader.find('%}')
+            if end == -1:
+                raise TemplateError('Missing end block %}', template.name, reader.line)
+            contents = reader.consume(end).strip()
+            reader.consume(2)
+            if not contents:
+                raise TemplateError('Empty block tag ({% %})', template.name, reader.line)
+            operator, space, suffix = contents.partition(' ')
+            suffix = suffix.strip()
+
+            # Intermediate ('else', 'elif', etc) blocks
+            intermediate_blocks = {
+                'else': {'if', 'for', 'while', 'try'},
+                'elif': {'if'},
+                'except': {'try'},
+                'finally': {'try'},
+            }
+            allowed_parents = intermediate_blocks.get(operator)
+            if allowed_parents is not None:
+                if not in_block:
+                    msg = '{} outside {} block'.format(operator, allowed_parents)
+                    raise TemplateError(msg, template.name, reader.line)
+                if in_block not in allowed_parents:
+                    msg = '{} block cannot be attached to {} block'.format(operator, in_block)
+                    raise TemplateError(msg, template.name, reader.line)
+                body.chunks.append(_IntermediateControlBlock(contents, line))
+                continue
+
+            # End tag
+            elif operator == 'end':
+                if not in_block:
+                    raise TemplateError('Extra {% end %} block', template.name, reader.line)
+                return body
+
+            elif operator in ('extends', 'include', 'set', 'import', 'from',
+                              'comment', 'auto_escape', 'raw', 'module'):
+                block = None
+                if operator == 'comment':
+                    continue
+                if operator == 'extends':
+                    suffix = suffix.strip('"').strip("'")
+                    if not suffix:
+                        raise TemplateError('extends missing file path', template.name, reader.line)
+                    block = _ExtendsBlock(suffix)
+                elif operator in ('import', 'from'):
+                    if not suffix:
+                        raise TemplateError('import missing statement', template.name, reader.line)
+                    block = _Statement(contents, line)
+                elif operator == 'include':
+                    suffix = suffix.strip('"').strip("'")
+                    if not suffix:
+                        raise TemplateError('include missing file path', template.name, reader.line)
+                    block = _IncludeBlock(suffix, template.name, line)
+                elif operator == 'set':
+                    if not suffix:
+                        raise TemplateError('set missing statement', template.name, reader.line)
+                    block = _Statement(suffix, line)
+                elif operator == 'auto_escape':
+                    fn = suffix.strip()
+                    if fn == 'None':
+                        fn = None
+                    template.auto_escape = fn
+                    continue
+                elif operator == 'raw':
+                    block = _Expression(suffix, line, raw=True)
+                elif operator == 'module':
+                    block = _Module(suffix, line)
+                body.chunks.append(block)
+                continue
+
+            elif operator in ('apply', 'block', 'try', 'if', 'for', 'while'):
+                # parse inner body recursively
+                if operator in ('for', 'while'):
+                    block_body = _parse(template, reader, operator, operator)
+                elif operator == 'apply':
+                    # apply creates a nested function so syntactically it's not
+                    # in the loop.
+                    block_body = _parse(template, reader, operator, None)
+                else:
+                    block_body = _parse(template, reader, operator, in_loop)
+
+                if operator == 'apply':
+                    if not suffix:
+                        raise TemplateError('apply missing method name', template.name, reader.line)
+                    block = _ApplyBlock(suffix, line, block_body)
+                elif operator == 'block':
+                    if not suffix:
+                        raise TemplateError('block missing name', template.name, reader.line)
+                    block = _NamedBlock(suffix, block_body, template, line)
+                else:
+                    block = _ControlBlock(contents, line, block_body)
+                body.chunks.append(block)
+                continue
+
+            elif operator in ('break', 'continue'):
+                if not in_loop:
+                    raise TemplateError('{} outside {} block'.format(operator, 'for, while'), template.name, reader.line)
+                body.chunks.append(_Statement(contents, line))
+                continue
+
+            else:
+                raise TemplateError('unknown operator: {}'.format(operator), template.name, reader.line)
+
+        def generate(self, **kwargs):
+            reader = _Reader(self.template)
+            writer = _Writer(self.buffer)
+            root = self.parse(reader, writer)
+            self.namespace.update(**kwargs)
+            exec(buffer.getvalue(), self.namespace, None)
+            execute = self.namespace['_tt_execute']
+            linecache.clearcache()
+            return execute()
 
 
 class _Root(Node):
-    def __init__(self, template, body):
-        self.template = template
-        self.body = body
-        self.line = 0
+    def __init__(self, writer):
+        super(_Root, self).__init__(writer)
+        self.chunks = []
 
-    def generate(self, writer):
-        writer.write_line('def _tt_execute():', self.line)
-        with writer.indent():
-            writer.write_line('_tt_buffer = []', self.line)
-            writer.write_line('_tt_append = _tt_buffer.append', self.line)
-            self.body.generate(writer)
-            writer.write_line("return _tt_utf8('').join(_tt_buffer)", self.line)
+    def generate(self):
+        self.writer.write_line('def tt_execute():')
+        with self.writer.indent():
+            self.writer.write_line('tt_buffer = []')
+            for chunk in self.chunks:
+                chunk.generate()
+            self.writer.write_line("return tt_str('').join(tt_buffer)")
 
-    def each_child(self):
-        return self.body,
+    def add_chunk(self, chunk: Node):
+        self.chunks.append(chunk)
