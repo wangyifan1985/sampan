@@ -24,11 +24,19 @@ __all__ = ['Template', 'TemplateError', 'Tag', 'Node']
 ###############################################################################
 INDENT = 4
 STRING_NAME = '<string>'
+BOUNDARY = ('{', '}')
+RE_FLAGS = re.MULTILINE | re.DOTALL
 
 
 # Errors ######################################################################
 ###############################################################################
 class TemplateError(SampanError):
+    @staticmethod
+    def linecol(s: str, pos: int):
+        line = s.count('\n', 0, pos) + 1
+        col = pos + 1 if line == 1 else pos - s.rindex('\n', 0, pos)
+        return str(line), str(col)
+
     def __init__(self, msg: str):
         self.msg = msg
 
@@ -37,13 +45,12 @@ class TemplateError(SampanError):
 
 
 class TemplateParseError(TemplateError):
-    def __init__(self, s: str, pos: int, msg: str='Can not parse template: '):
+    def __init__(self, reader, msg: str='Can not parse template: '):
         super(TemplateParseError, self).__init__(msg)
-        self.s = s
-        self.pos = pos
+        self.reader = reader
 
     def __str__(self):
-        line, col = self.linecol(self.s, self.pos)
+        line, col = self.linecol(self.reader.s, self.reader.pos)
         return ''.join((self.msg, line, ' : ', col))
 
 
@@ -54,25 +61,28 @@ class _Reader:
         self.s = s
         self.pos = 0
 
-    def find(self, ss: str, start: int=0, end: int=None):
-        start += self.pos
-        if end is None:
-            index = self.s.find(ss, start)
-        else:
-            end += self.pos
-            assert end >= start
-            index = self.s.find(ss, start, end)
-        if index != -1:
-            index -= self.pos
-        return index
+    def find(self, sub: str, start: int=0, end: int=None) -> int:
+        index = self.s.find(sub, start + self.pos, end if end is None else end + self.pos)
+        return index if index == -1 else index - self.pos
 
-    def consume(self, count: int=None):
+    def consume(self, count: int=None) -> str:
         if count is None:
             count = len(self.s) - self.pos
         new_pos = self.pos + count
-        s = self.s[self.pos:new_pos]
+        sub = self.s[self.pos:new_pos]
         self.pos = new_pos
-        return s
+        return sub
+
+    def re_consume(self, pattern: str) -> typing.Union[str, None]:
+        patt = re.compile(pattern)
+        m = patt.match(self.s, self.pos)
+        if m is None:
+            return m
+        self.pos = m.end()
+        return m.group()
+
+    def eof(self) -> bool:
+        return self.pos == len(self.s) - 1
 
     def remain(self):
         return len(self.s) - self.pos
@@ -139,41 +149,76 @@ class _Writer(object):
         print('    ' * indent + line, file=self.file)
 
 
-class Tag(Enum):
-    COMMENT = ('{#', '#}')
-    EXPRESSION = ('{{', '}}')
-    STATEMENT = ('{%', '%}')
-
-
 class Node:
-    writer = None
+    def generate(self, writer: _Writer):
+        raise NotImplementedError
 
-    def __init__(self, writer: _Writer):
-        self.writer = writer
 
-    def generate(self):
-        raise NotImplementedError()
+class _Root(Node):
+    def __init__(self):
+        self.chunks = []
+
+    def generate(self, writer):
+        writer.write_line('def tt_execute():')
+        with writer.indent():
+            writer.write_line('tt_buffer = []')
+            writer.write_line('tt_append = tt_buffer.append')
+            for chunk in self.chunks:
+                chunk.generate()
+            writer.write_line("return tt_str('').join(tt_buffer)")
+
+    def add_chunk(self, chunk: Node):
+        self.chunks.append(chunk)
+
+
+class _Text(Node):
+    def __init__(self, raw: str):
+        self.text = raw
+
+    def generate(self, writer):
+        writer.write_line(f'tt_append({repr(to_str(self.text))})')
+
+
+class _Comment(Node):
+    tag = ('#', '#')
+
+    def __init__(self, raw: str):
+        _ = raw
+    
+    def generate(self, writer):
+        pass
+
+
+class _Expression(Node):
+    tag = ('{', '}')
+
+    def __init__(self, raw: str, is_raw=False, auto_escape=None):
+        self.exp = raw.lstrip(''.join((BOUNDARY[0], self.tag[0]))).rstrip(''.join((BOUNDARY[1], self.tag[1]))).strip()
+        self.is_raw = is_raw
+        self.auto_escape = auto_escape
+    
+    def generate(self, writer):
+        writer.write_line(f'tt_tmp = {self.exp}')
+        writer.write_line('if isinstance(tt_tmp, str): tt_tmp = tt_str(tt_tmp)')
+        if not self.is_raw and self.auto_escape is not None:
+            writer.write_line(f'tt_tmp = tt_str({self.auto_escape}(tt_tmp))')
+        writer.write_line('tt_append(tt_tmp)')
+
 
 
 class Template:
-    _parsers = {}
+    comm_re = re.compile('')
+    exp_re = re.compile('')
+    stat_re = re.compile('')
+    parsers = {
+        ('#', None): _Comment,
+        ('{', None): _Expression,
+        ('%', ''): _
+    }
 
-    @classmethod
-    def parser(cls, tag: Tag, key: str):
-        def wrapper(node: typing.Type[Node]):
-            cls._parsers[(tag, key)] = node
-
-            def wrapped(*args, **kwargs):
-                return node(*args, **kwargs)
-            return wrapped
-        return wrapper
-
-    def __new__(cls, s):
-        return super(Template, cls).__new__(cls)
-
-    def __init__(self, s: str):
-        self.raw = s
+    def __init__(self, raw: str):
         self.cache = {}
+        self.raw = raw
         self.buffer = StringIO()
         self.lock = threading.RLock()
         self.namespace = {
@@ -186,39 +231,25 @@ class Template:
             'datetime': datetime
         }
 
-    def parse(self, reader: _Reader, writer: _Writer) -> _Root:
+    def scan(self, reader: _Reader, writer: _Writer) -> _Root:
         root = _Root(writer)
-        while True:
-            # Find next template directive
-            curly = 0
-            while True:
-                curly = reader.find('{', curly)
-                if curly == -1 or curly + 1 == reader.remaining():
-                    # EOF
-                    if in_block:
-                        msg = 'Missing end block for {}'.format(in_block)
-                        raise TemplateError(msg, template.name, reader.line)
-                    body.chunks.append(_Text(reader.consume(), reader.line))
-                    return body
-                # If the first curly brace is not the start of a special token,
-                # start searching from the character after it
-                if reader[curly + 1] not in ('{', '%', '#'):
-                    curly += 1
-                    continue
-                # When there are more than 2 curlies in a row, use the
-                # innermost ones.  This is useful when generating languages
-                # like latex where curlies are also meaningful
-                if curly + 2 < reader.remaining() and reader[curly + 1] == '{' and reader[curly + 2] == '{':
-                    curly += 1
-                    continue
-                break
+        while not reader.eof():
+            if reader[0] == BOUNDARY[0]:
+                start = reader[0:2]
+                if start == Tag.COMMENT.start():
+                    root.add_chunk(_Comment(reader, writer))
+                elif start == Tag.EXPRESSION.start():
+                    root.add_chunk(_Expression(reader, writer))
+                elif start == Tag.STATEMENT.start():
+                    operator
+            else:
+                root.add_chunk(_Text(reader, writer))
 
-            # Append any text before the special token
-            if curly > 0:
-                cons = reader.consume(curly)
-                body.chunks.append(_Text(cons, reader.line))
 
-            start_brace = reader.consume(2)
+                
+                
+
+            start = reader.consume(2)
             line = reader.line
 
             # Template directives may be escaped as '{{!' or '{%!'.
@@ -227,29 +258,40 @@ class Template:
             # which also use double braces.
             if reader.remaining() and reader[0] == '!':
                 reader.consume(1)
-                body.chunks.append(_Text(start_brace, line))
+                root.add_chunk(_Text(writer, start))
                 continue
 
             # Comment
-            if start_brace == '{#':
-                end = reader.find('#}')
+            if start == self.brace_start(Tag.COMMENT)
+                end = reader.find(self.brace_end(Tag.COMMENT))
                 if end == -1:
-                    raise TemplateError('Missing end comment #}', template.name, reader.line)
-                _ = reader.consume(end).strip()
-                reader.consume(2)
+                    raise TemplateParseError(reader.s, pos, f'Missing end comment: "{self.brace_end(Tag.COMMENT)}":')
+                reader.consume(end + 2)
                 continue
 
             # Expression
-            if start_brace == '{{':
-                end = reader.find('}}')
+            if start == self.brace_start(Tag.EXPRESSION)
+                end = reader.find(self.brace_end(Tag.EXPRESSION))
                 if end == -1:
-                    raise TemplateError('Missing end expression }}', template.name, reader.line)
+                    raise TemplateParseError(reader.s, pos, f'Missing end expression "{self.brace_end(Tag.EXPRESSION)}":')
                 contents = reader.consume(end).strip()
                 reader.consume(2)
                 if not contents:
-                    raise TemplateError('Empty expression', template.name, reader.line)
-                body.chunks.append(_Expression(contents, line))
+                    raise TemplateParseError(reader.s, pos, 'Empty expression: ')
+                root.add_chunk(self.parser[(Tag.EXPRESSION, '')](writer, contents))
                 continue
+            
+            # Block
+            if start == self.brace_start(Tag.STATEMENT)
+                end = reader.find(self.brace_end(Tag.STATEMENT))
+                if end == -1:
+                    raise TemplateParseError(reader.s, pos, f'Missing end block "{self.brace_end(Tag.STATEMENT)}"')
+                contents = reader.consume(end).strip()
+                reader.consume(2)
+                if not contents:
+                    raise TemplateParseError(reader.s, pos, 'Empty block tag: ')
+                operator, space, suffix = contents.partition(' ')
+                suffix =suffix.strip()
 
             # Block
             assert start_brace == '{%', start_brace
@@ -357,28 +399,19 @@ class Template:
                 raise TemplateError('unknown operator: {}'.format(operator), template.name, reader.line)
 
         def generate(self, **kwargs):
-            reader = _Reader(self.template)
-            writer = _Writer(self.buffer)
-            root = self.parse(reader, writer)
+            root = self.parse(_Reader(self.raw), _Writer(self.buffer))
             self.namespace.update(**kwargs)
-            exec(buffer.getvalue(), self.namespace, None)
-            execute = self.namespace['_tt_execute']
+            exec(self.buffer.getvalue(), self.namespace, None)
+            execute = self.namespace['tt_execute']
             linecache.clearcache()
             return execute()
 
 
-class _Root(Node):
-    def __init__(self, writer):
-        super(_Root, self).__init__(writer)
-        self.chunks = []
 
-    def generate(self):
-        self.writer.write_line('def tt_execute():')
-        with self.writer.indent():
-            self.writer.write_line('tt_buffer = []')
-            for chunk in self.chunks:
-                chunk.generate()
-            self.writer.write_line("return tt_str('').join(tt_buffer)")
 
-    def add_chunk(self, chunk: Node):
-        self.chunks.append(chunk)
+
+
+if __name__ == '__main__':
+    a = "{{abc"
+    r = _Reader(a)
+    print(r.find('{{'))
