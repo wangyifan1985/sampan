@@ -26,6 +26,7 @@ INDENT = 4
 STRING_NAME = '<string>'
 BOUNDARY = ('{', '}')
 RE_FLAGS = re.MULTILINE | re.DOTALL
+WS_RE = re.compile(r'[ \t\n\r]*', RE_FLAGS)
 
 
 # Errors ######################################################################
@@ -65,6 +66,9 @@ class _Reader:
         index = self.s.find(sub, start + self.pos, end if end is None else end + self.pos)
         return index if index == -1 else index - self.pos
 
+    def re_find(self, regex, start: int=0, end: int=None) -> tuple:
+        m = regex.match(self.s, self.pos)
+
     def consume(self, count: int=None) -> str:
         if count is None:
             count = len(self.s) - self.pos
@@ -73,13 +77,11 @@ class _Reader:
         self.pos = new_pos
         return sub
 
-    def re_consume(self, pattern: str) -> typing.Union[str, None]:
-        patt = re.compile(pattern)
-        m = patt.match(self.s, self.pos)
-        if m is None:
-            return m
-        self.pos = m.end()
-        return m.group()
+    def re_consume(self, regex):
+        m = regex.match(self.s, self.pos)
+        if m is not None:
+            self.pos = m.end()
+        return m
 
     def eof(self) -> bool:
         return self.pos == len(self.s) - 1
@@ -150,66 +152,75 @@ class _Writer(object):
 
 
 class Node:
-    def generate(self, writer: _Writer):
+    reader = None
+    writer = None
+    def __init__(self, reader: _Reader=None, writer: _Writer=None):
+        self.reader = reader
+        self.writer = writer
+
+    def generate(self):
         raise NotImplementedError
 
 
 class _Root(Node):
-    def __init__(self):
+    def __init__(self, writer: _Writer):
+        super(_Root, self).__init__(writer=writer)
         self.chunks = []
 
-    def generate(self, writer):
-        writer.write_line('def tt_execute():')
-        with writer.indent():
-            writer.write_line('tt_buffer = []')
-            writer.write_line('tt_append = tt_buffer.append')
+    def generate(self):
+        self.writer.write_line('def tt_execute():')
+        with self.writer.indent():
+            self.writer.write_line('tt_buffer = []')
+            self.writer.write_line('tt_append = tt_buffer.append')
             for chunk in self.chunks:
                 chunk.generate()
-            writer.write_line("return tt_str('').join(tt_buffer)")
+            self.writer.write_line("return tt_str('').join(tt_buffer)")
 
     def add_chunk(self, chunk: Node):
         self.chunks.append(chunk)
 
 
 class _Text(Node):
-    def __init__(self, raw: str):
-        self.text = raw
+    text_re = re.compile(rf'[^{BOUNDARY[0]}]+', RE_FLAGS)
 
-    def generate(self, writer):
-        writer.write_line(f'tt_append({repr(to_str(self.text))})')
+    def __init__(self, reader, writer):
+        super(_Text, self).__init__(reader, writer)
+        self.text = self.reader.re_consume(self.text_re).group()
+
+    def generate(self):
+        self.writer.write_line(f'tt_append({repr(to_str(self.text))})')
 
 
 class _Comment(Node):
-    tag = ('#', '#')
+    comment_re = re.compile(rf'{BOUNDARY[0]}#.+?#{BOUNDARY[1]}', RE_FLAGS)
 
-    def __init__(self, raw: str):
-        _ = raw
-    
-    def generate(self, writer):
+    def __init__(self, reader, writer):
+        super(_Comment, self).__init__(reader, writer)
+        _ = self.reader.re_consume(self.comment_re)
+
+    def generate(self):
         pass
 
 
 class _Expression(Node):
-    tag = ('{', '}')
+    exp_re = re.compile(rf'{BOUNDARY[0]}{{{WS_RE.pattern}(.+?){WS_RE.pattern}}}{BOUNDARY[1]}', RE_FLAGS)
 
-    def __init__(self, raw: str, is_raw=False, auto_escape=None):
-        self.exp = raw.lstrip(''.join((BOUNDARY[0], self.tag[0]))).rstrip(''.join((BOUNDARY[1], self.tag[1]))).strip()
-        self.is_raw = is_raw
+    def __init__(self, reader, writer, raw=False, auto_escape=None):
+        super(_Expression, self).__init__(reader, writer)
+        self.exp = self.reader.re_consume(self.exp_re).group(1)
+        self.raw = raw
         self.auto_escape = auto_escape
     
-    def generate(self, writer):
-        writer.write_line(f'tt_tmp = {self.exp}')
-        writer.write_line('if isinstance(tt_tmp, str): tt_tmp = tt_str(tt_tmp)')
-        if not self.is_raw and self.auto_escape is not None:
-            writer.write_line(f'tt_tmp = tt_str({self.auto_escape}(tt_tmp))')
-        writer.write_line('tt_append(tt_tmp)')
+    def generate(self):
+        self.writer.write_line(f'tt_tmp = {self.exp}')
+        self.writer.write_line('if isinstance(tt_tmp, str): tt_tmp = tt_str(tt_tmp)')
+        if not self.raw and self.auto_escape is not None:
+            self.writer.write_line(f'tt_tmp = tt_str({self.auto_escape}(tt_tmp))')
+        self.writer.write_line('tt_append(tt_tmp)')
 
 
 
 class Template:
-    comm_re = re.compile('')
-    exp_re = re.compile('')
-    stat_re = re.compile('')
     parsers = {
         ('#', None): _Comment,
         ('{', None): _Expression,
@@ -231,17 +242,24 @@ class Template:
             'datetime': datetime
         }
 
+    def generate(self, **kwargs):
+        _root = self.scan(_Reader(self.raw), _Writer(self.buffer))
+        self.namespace.update(**kwargs)
+        exec(self.buffer.getvalue(), self.namespace, None)
+        execute = self.namespace['tt_execute']
+        linecache.clearcache()
+        return execute()
+
     def scan(self, reader: _Reader, writer: _Writer) -> _Root:
         root = _Root(writer)
         while not reader.eof():
             if reader[0] == BOUNDARY[0]:
-                start = reader[0:2]
-                if start == Tag.COMMENT.start():
+                if reader[1] == '#':
                     root.add_chunk(_Comment(reader, writer))
-                elif start == Tag.EXPRESSION.start():
+                elif reader[1] == '{':
                     root.add_chunk(_Expression(reader, writer))
-                elif start == Tag.STATEMENT.start():
-                    operator
+                elif reader[1] == '%':
+
             else:
                 root.add_chunk(_Text(reader, writer))
 
@@ -398,13 +416,7 @@ class Template:
             else:
                 raise TemplateError('unknown operator: {}'.format(operator), template.name, reader.line)
 
-        def generate(self, **kwargs):
-            root = self.parse(_Reader(self.raw), _Writer(self.buffer))
-            self.namespace.update(**kwargs)
-            exec(self.buffer.getvalue(), self.namespace, None)
-            execute = self.namespace['tt_execute']
-            linecache.clearcache()
-            return execute()
+
 
 
 
