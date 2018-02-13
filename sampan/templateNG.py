@@ -155,6 +155,7 @@ class _Writer(object):
 class Node:
     reader = None
     writer = None
+
     def __init__(self, reader: _Reader=None, writer: _Writer=None):
         self.reader = reader
         self.writer = writer
@@ -254,19 +255,52 @@ class _StatementRaw(_Statement):
         self.writer.write_line('tt_append(tt_tmp)')
 
 
+class _StatementAutoescape(_Statement):
+    def __init__(self, reader, writer, template):
+        super(_StatementAutoescape, self).__init__(reader, writer)
+        self.template = template
+        _, _, self.autoescape = super(_StatementAutoescape, self).stat.partition(' ')
 
-    
-    
+    def generate(self):
+        self.template.autoescape = None if self.autoescape == 'None' else self.template.namespace[self.autoescape]
 
-    
+
+class _StatementModule(_Statement):
+    def __init__(self, reader, writer):
+        super(_StatementModule, self).__init__(reader, writer)
+        _, _, self.module = super(_StatementModule, self).stat.partition(' ')
+
+    def generate(self):
+        self.writer.write_line(f'tt_modules.{self.module}')
+
+
+class _StatementIf(_Statement):
+    pattern = re.compile(rf'{_Statement.tag[0]}{WS.pattern}(if{WS.pattern}.+?){WS.pattern}{_Statement.tag[1]}'
+                         rf'(.+?)'
+                         rf'{_Statement.tag[0]}{WS.pattern}(else){WS.pattern}{_Statement.tag[1]}'
+                         rf'(.+?)'
+                         rf'{_Statement.tag[0]}{WS.pattern}(elif{WS.pattern}.+?){WS.pattern}{_Statement.tag[1]}'
+                         rf'(.+?)'
+                         rf'{_Statement.tag[0]}{WS.pattern}(end){WS.pattern}{_Statement.tag[1]}', RE_FLAGS)
+
+    def __init__(self, reader, writer):
+        super(_StatementIf, self).__init__(reader, writer)
+
+
+
+
+
+
+
 
 
 class Template:
-    def __init__(self, raw: str):
+    def __init__(self, raw: str, autoescape: typing.Callable=None):
         self.cache = {}
         self.raw = raw
         self.buffer = StringIO()
         self.lock = threading.RLock()
+        self.autoescape = autoescape
         self.namespace = {
             '_tt_str': lambda s: s.decode(ENCODING) if isinstance(s, bytes) else str(s, ENCODING),
             'escape': escape,
@@ -301,8 +335,7 @@ class Template:
                         root.add_chunk(_StatementComment(reader, writer))
                     elif operator == 'raw':
                         root.add_chunk(_StatementRaw(reader, writer))
-                    
-
-
+                    elif operator == 'if':
+                        root.add_chunk(_StatementIf(reader, writer))
             else:
                 root.add_chunk(_Text(reader, writer))
