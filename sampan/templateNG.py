@@ -11,7 +11,6 @@ import datetime
 import linecache
 import threading
 from io import StringIO
-from enum import Enum
 from html import escape
 from urllib.parse import quote
 from json import dumps
@@ -24,9 +23,8 @@ __all__ = ['Template', 'TemplateError', 'Tag', 'Node']
 ###############################################################################
 INDENT = 4
 STRING_NAME = '<string>'
-BOUNDARY = ('{', '}')
 RE_FLAGS = re.MULTILINE | re.DOTALL
-WS = re.compile(r'[ \t\n\r]*', RE_FLAGS)
+WS = r'[ \t\n\r]*'
 
 
 # Errors ######################################################################
@@ -153,6 +151,7 @@ class _Writer(object):
 
 
 class Node:
+    tag = ('{', '}')
     reader = None
     writer = None
 
@@ -183,39 +182,37 @@ class _Root(Node):
 
 
 class _Text(Node):
-    pattern = re.compile(rf'[^{BOUNDARY[0]}]+', RE_FLAGS)
+    regex = re.compile(rf'[^{Node.tag[0]}]+', RE_FLAGS)
 
     def __init__(self, reader, writer):
         super(_Text, self).__init__(reader, writer)
-        self.text = self.reader.re_consume(self.pattern).group()
+        self.text = self.reader.re_consume(self.regex).group()
 
     def generate(self):
         self.writer.write_line(f'tt_append({repr(to_str(self.text))})')
 
 
 class _Comment(Node):
-    tag = (f'{BOUNDARY[0]}#', f'#{BOUNDARY[1]}')
-    pattern = re.compile(rf'{_Comment.tag[0]}'
-                         rf'.+?'
-                         rf'{_Comment.tag[1]}', RE_FLAGS)
+    tag = (f'{Node.tag[0]}#', f'#{Node.tag[1]}')
+    regex = re.compile(rf'{tag[0]}'
+                       rf'.+?'
+                       rf'{tag[1]}', RE_FLAGS)
 
     def __init__(self, reader, writer):
         super(_Comment, self).__init__(reader, writer)
-        _ = self.reader.re_consume(self.pattern)
+        _ = self.reader.re_consume(self.regex)
 
     def generate(self):
         pass
 
 
 class _Expression(Node):
-    tag = (f'{BOUNDARY[0]}{{', f'}}{BOUNDARY[1]}')
-    pattern = re.compile(rf'{_Expression.tag[0]}{WS.pattern}'
-                         rf'(.+?)'
-                         rf'{WS.pattern}{_Expression.tag[1]}')
+    tag = (f'{Node.tag[0]}{{', f'}}{Node.tag[1]}')
+    regex = re.compile(rf'{tag[0]}{WS}(.+?){WS}{tag[1]}')
 
     def __init__(self, reader, writer, auto_escape=None):
         super(_Expression, self).__init__(reader, writer)
-        self.exp = self.reader.re_consume(self.pattern).group(1)
+        self.exp = self.reader.re_consume(self.regex).group(1)
         self.auto_escape = auto_escape
     
     def generate(self):
@@ -227,15 +224,16 @@ class _Expression(Node):
 
 
 class _Statement(Node):
-    tag = (f'{BOUNDARY[0]}%', f'%{BOUNDARY[1]}')
-    pattern = re.compile(rf'{tag[0]}{WS.pattern}([a-zA-Z0-9_]+?{WS.pattern}.+?){WS.pattern}{tag[1]}')
+    tag = (f'{Node.tag[0]}%', f'%{Node.tag[1]}')
+    regex = re.compile(rf'{tag[0]}{WS}([a-zA-Z0-9_]+?{WS}.+?){WS}{tag[1]}')
 
     def __init__(self, reader, writer):
         super(_Statement, self).__init__(reader, writer)
-        self.stat = self.reader.re_consume(self.pattern).group(1)
+        self.stat = self.reader.re_consume(self.regex).group(1)
 
     def generate(self):
         self.writer.write_line(self.stat)
+
 
 class _StatementComment(_Statement):
     def __init__(self, reader, writer):
@@ -244,10 +242,11 @@ class _StatementComment(_Statement):
     def generate(self):
         pass
 
+
 class _StatementRaw(_Statement):
     def __init__(self, reader, writer):
         super(_StatementRaw, self).__init__(reader, writer)
-        _, _, self.stat = super(_StatementRaw, self).stat.partition(' ')
+        _, _, self.stat = self.stat.partition(' ')
 
     def generate(self):
         self.writer.write_line(f'tt_tmp = {self.stat}')
@@ -259,7 +258,7 @@ class _StatementAutoescape(_Statement):
     def __init__(self, reader, writer, template):
         super(_StatementAutoescape, self).__init__(reader, writer)
         self.template = template
-        _, _, self.autoescape = super(_StatementAutoescape, self).stat.partition(' ')
+        _, _, self.autoescape = self.stat.partition(' ')
 
     def generate(self):
         self.template.autoescape = None if self.autoescape == 'None' else self.template.namespace[self.autoescape]
@@ -268,33 +267,37 @@ class _StatementAutoescape(_Statement):
 class _StatementModule(_Statement):
     def __init__(self, reader, writer):
         super(_StatementModule, self).__init__(reader, writer)
-        _, _, self.module = super(_StatementModule, self).stat.partition(' ')
+        _, _, self.module = self.stat.partition(' ')
 
     def generate(self):
         self.writer.write_line(f'tt_modules.{self.module}')
 
 
 class _StatementIf(_Statement):
-    pattern = re.compile(rf'{_Statement.tag[0]}{WS.pattern}(if{WS.pattern}.+?){WS.pattern}{_Statement.tag[1]}'
-                         rf'(.+?)'
-                         rf'{_Statement.tag[0]}{WS.pattern}(else){WS.pattern}{_Statement.tag[1]}'
-                         rf'(.+?)'
-                         rf'{_Statement.tag[0]}{WS.pattern}(elif{WS.pattern}.+?){WS.pattern}{_Statement.tag[1]}'
-                         rf'(.+?)'
-                         rf'{_Statement.tag[0]}{WS.pattern}(end){WS.pattern}{_Statement.tag[1]}', RE_FLAGS)
+    regex = re.compile(rf'{_Statement.regex.pattern}((?:(?!{_Statement.tag[0]}{WS}(?:else|elif|end)).)*)', RE_FLAGS)
 
-    def __init__(self, reader, writer):
+    def __init__(self, reader, writer, template):
         super(_StatementIf, self).__init__(reader, writer)
+        self.template = template
+        self.stats = []
+        _m = self.reader.re_consume(self.regex)
+        self.stats = (_m.group(1), self.template.parse(_Reader(_m.group(2)), self.writer))
+
+    def generate(self):
+        for stat in self.stats:
+            self.writer.write_line(f'{stat[0]}:')
+            if stat[1] is not None:
+                with self.writer.indent():
+                    stat[1].generate()
 
 
-
-
-
-
+class _StatementFor(_Statement):
+    regex = re.compile(rf'{_Statement.regex.pattern}((?:(?!{_Statement.tag[0]}{WS}(?:else|elif|end)).)*)', RE_FLAGS)
 
 
 
 class Template:
+
     def __init__(self, raw: str, autoescape: typing.Callable=None):
         self.cache = {}
         self.raw = raw
@@ -319,16 +322,16 @@ class Template:
         linecache.clearcache()
         return execute()
 
-    def parse(self, reader: _Reader, writer: _Writer) -> _Root:
+    def parse(reader: _Reader, writer: _Writer) -> _Root:
         root = _Root(writer)
         while not reader.eof():
-            if reader[0] == BOUNDARY[0]:
+            if reader[0] == Node.tag[0]:
                 if reader[1] == '#':
                     root.add_chunk(_Comment(reader, writer))
                 elif reader[1] == '{':
                     root.add_chunk(_Expression(reader, writer))
                 elif reader[1] == '%':
-                    operator = reader.re_find(rf'{BOUNDARY[0]}%{WS_RE.pattern}([a-zA-Z0-9_]+?){WS_RE.pattern}').group(1)
+                    operator = reader.re_find(rf'{Node.tag[0]}%{WS}([a-zA-Z0-9_]+?){WS}').group(1)
                     if operator in ('import', 'from', 'set'):
                         root.add_chunk(_Statement(reader, writer))
                     elif operator == 'comment':
