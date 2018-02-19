@@ -339,15 +339,26 @@ class _StatementBlock(_Statement):
         pass
 
 
-class _StatementExtends(_Statement):
+class _StatementInclude(_Statement):
     def __init__(self, reader, writer, template):
-        super(_StatementExtends, self).__init__(reader, writer)
+        super(_StatementInclude, self).__init__(reader, writer)
         self.template = template
-        _, _, self.name = super(_StatementExtends, self).stat.partition(' ')
+        _, _, self.name = super(_StatementInclude, self).stat.partition(' ')
         self.name = self.name.strip("'").strip('"')
 
     def generate(self):
         pass
+
+
+class _StatementExtends(_StatementInclude):
+    def __init__(self, reader, writer, template):
+        super(_StatementExtends, self).__init__(reader, writer, template)
+
+    def generate(self):
+        pass
+
+
+
 
 
 class Template:
@@ -403,3 +414,4 @@ class Template:
                         raise TemplateParseError(reader)
             else:
                 root.add_chunk(_Text(reader, writer))
+        return root
