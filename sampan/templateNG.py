@@ -60,23 +60,10 @@ class _Reader:
         self.s = s
         self.pos = 0
 
-    def find(self, sub: str, start: int=0, end: int=None) -> int:
-        index = self.s.find(sub, start + self.pos, end if end is None else end + self.pos)
-        return index if index == -1 else index - self.pos
-
-    def re_find(self, regex, start: int=0, end: int=None) -> tuple:
+    def find(self, regex, start: int=0, end: int=None) -> tuple:
         return regex.match(self.s, start + self.pos, len(self.s) if end is None else end + self.pos)
 
-
-    def consume(self, count: int=None) -> str:
-        if count is None:
-            count = len(self.s) - self.pos
-        new_pos = self.pos + count
-        sub = self.s[self.pos:new_pos]
-        self.pos = new_pos
-        return sub
-
-    def re_consume(self, regex):
+    def consume(self, regex):
         m = regex.match(self.s, self.pos)
         if m is not None:
             self.pos = m.end()
@@ -152,8 +139,6 @@ class _Writer(object):
 
 class Node:
     tag = ('{', '}')
-    reader = None
-    writer = None
 
     def __init__(self, reader: _Reader=None, writer: _Writer=None):
         self.reader = reader
@@ -186,7 +171,7 @@ class _Text(Node):
 
     def __init__(self, reader, writer):
         super(_Text, self).__init__(reader, writer)
-        self.text = self.reader.re_consume(self.regex).group()
+        self.text = self.reader.consume(self.regex).group()
 
     def generate(self):
         self.writer.write_line(f'tt_append({repr(to_str(self.text))})')
@@ -194,13 +179,11 @@ class _Text(Node):
 
 class _Comment(Node):
     tag = (f'{Node.tag[0]}#', f'#{Node.tag[1]}')
-    regex = re.compile(rf'{tag[0]}'
-                       rf'.+?'
-                       rf'{tag[1]}', RE_FLAGS)
+    regex = re.compile(rf'{tag[0]}.+?{tag[1]}', RE_FLAGS)
 
     def __init__(self, reader, writer):
         super(_Comment, self).__init__(reader, writer)
-        _ = self.reader.re_consume(self.regex)
+        _ = self.reader.consume(self.regex)
 
     def generate(self):
         pass
@@ -212,7 +195,7 @@ class _Expression(Node):
 
     def __init__(self, reader, writer, auto_escape=None):
         super(_Expression, self).__init__(reader, writer)
-        self.exp = self.reader.re_consume(self.regex).group(1)
+        self.exp = self.reader.consume(self.regex).group(1)
         self.auto_escape = auto_escape
     
     def generate(self):
@@ -226,10 +209,11 @@ class _Expression(Node):
 class _Statement(Node):
     tag = (f'{Node.tag[0]}%', f'%{Node.tag[1]}')
     regex = re.compile(rf'{tag[0]}{WS}([a-zA-Z0-9_]+?{WS}.+?){WS}{tag[1]}')
+    regex_end = re.compile(rf'{tag[0]}{WS}end{WS}{tag[1]}')
 
     def __init__(self, reader, writer):
         super(_Statement, self).__init__(reader, writer)
-        self.stat = self.reader.re_consume(self.regex).group(1)
+        self.stat = self.reader.consume(self.regex).group(1)
 
     def generate(self):
         self.writer.write_line(self.stat)
@@ -274,30 +258,99 @@ class _StatementModule(_Statement):
 
 
 class _StatementIf(_Statement):
-    regex = re.compile(rf'{_Statement.regex.pattern}((?:(?!{_Statement.tag[0]}{WS}(?:else|elif|end)).)*)', RE_FLAGS)
+    regex = re.compile(rf'{_Statement.tag[0]}{WS}((?:if|else|elif){WS}.+?){WS}{_Statement.tag[1]}'
+                       rf'((?:(?!{_Statement.tag[0]}{WS}(?:else|elif|end)).)*)', RE_FLAGS)
 
     def __init__(self, reader, writer, template):
         super(_StatementIf, self).__init__(reader, writer)
         self.template = template
         self.stats = []
-        _m = self.reader.re_consume(self.regex)
-        self.stats = (_m.group(1), self.template.parse(_Reader(_m.group(2)), self.writer))
+        _m = self.reader.consume(self.regex)
+        while _m is not None:
+            self.stats = (_m.group(1), self.template.parse(_Reader(_m.group(2)), self.writer))
+            _m = self.reader.consume(self.regex)
+        else:
+            self.reader.consume(self.regex_end)
 
     def generate(self):
         for stat in self.stats:
             self.writer.write_line(f'{stat[0]}:')
-            if stat[1] is not None:
-                with self.writer.indent():
+            with self.writer.indent():
+                if stat[1] is not None:
                     stat[1].generate()
+                else:
+                    self.writer.write_line('pass')
 
 
-class _StatementFor(_Statement):
-    regex = re.compile(rf'{_Statement.regex.pattern}((?:(?!{_Statement.tag[0]}{WS}(?:else|elif|end)).)*)', RE_FLAGS)
+class _StatementLoop(_Statement):
+    regex = re.compile(rf'{_Statement.tag[0]}{WS}((?:for|while){WS}.+?){WS}{_Statement.tag[1]}'
+                       rf'(.+?){_Statement.regex_end.pattern}', RE_FLAGS)
 
+    def __init__(self, reader, writer, template):
+        super(_StatementLoop, self).__init__(reader, writer)
+        self.template = template
+        _m = self.reader.consume(self.regex)
+        self.cond = _m.group(1)
+        self.stat = _m.group(2)
+
+    def generate(self):
+        self.writer.write_line(f'{self.cond}:')
+        with self.writer.indent():
+            self.writer.write_line(f'{self.stat}')
+
+
+class _StatementTry(_Statement):
+    regex = re.compile(rf'{_Statement.tag[0]}{WS}((?:try|except|else|finally){WS}.+?){WS}{_Statement.tag[1]}'
+                       rf'((?:(?!{_Statement.tag[0]}{WS}(?:except|else|finally|end)).)*)', RE_FLAGS)
+
+    def __init__(self, reader, writer, template):
+        super(_StatementTry, self).__init__(reader, writer)
+        self.template = template
+        self.stats = []
+        _m = self.reader.consume(self.regex)
+        while _m is not None:
+            self.stats = (_m.group(1), self.template.parse(_Reader(_m.group(2)), self.writer))
+            _m = self.reader.consume(self.regex)
+        else:
+            self.reader.consume(self.regex_end)
+
+    def generate(self):
+        for stat in self.stats:
+            self.writer.write_line(f'{stat[0]}:')
+            with self.writer.indent():
+                if stat[1] is not None:
+                    stat[1].generate()
+                else:
+                    self.writer.write_line('pass')
+
+
+class _StatementBlock(_Statement):
+    regex = re.compile(rf'{_Statement.tag[0]}{WS}(block{WS}.+?){WS}{_Statement.tag[1]}'
+                       rf'(.+?){_Statement.regex_end.pattern}', RE_FLAGS)
+
+    def __init__(self, reader, writer, template):
+        super(_StatementBlock, self).__init__(reader, writer)
+        self.template = template
+        _m = self.reader.consume(self.regex)
+        self.name = _m.group(1)
+        self.body = _m.group(2)
+
+    def generate(self):
+        pass
+
+
+class _StatementExtends(_Statement):
+    def __init__(self, reader, writer, template):
+        super(_StatementExtends, self).__init__(reader, writer)
+        self.template = template
+        _, _, self.name = super(_StatementExtends, self).stat.partition(' ')
+        self.name = self.name.strip("'").strip('"')
+
+    def generate(self):
+        pass
 
 
 class Template:
-
     def __init__(self, raw: str, autoescape: typing.Callable=None):
         self.cache = {}
         self.raw = raw
@@ -322,7 +375,7 @@ class Template:
         linecache.clearcache()
         return execute()
 
-    def parse(reader: _Reader, writer: _Writer) -> _Root:
+    def parse(self, reader: _Reader, writer: _Writer) -> _Root:
         root = _Root(writer)
         while not reader.eof():
             if reader[0] == Node.tag[0]:
@@ -331,14 +384,22 @@ class Template:
                 elif reader[1] == '{':
                     root.add_chunk(_Expression(reader, writer))
                 elif reader[1] == '%':
-                    operator = reader.re_find(rf'{Node.tag[0]}%{WS}([a-zA-Z0-9_]+?){WS}').group(1)
-                    if operator in ('import', 'from', 'set'):
+                    operator = reader.find(rf'{Node.tag[0]}%{WS}([a-zA-Z0-9_]+?){WS}').group(1)
+                    if operator in ('import', 'from', 'set', 'break', 'continue', 'pass'):
                         root.add_chunk(_Statement(reader, writer))
                     elif operator == 'comment':
                         root.add_chunk(_StatementComment(reader, writer))
                     elif operator == 'raw':
                         root.add_chunk(_StatementRaw(reader, writer))
                     elif operator == 'if':
-                        root.add_chunk(_StatementIf(reader, writer))
+                        root.add_chunk(_StatementIf(reader, writer, self))
+                    elif operator in ('for', 'while'):
+                        root.add_chunk(_StatementLoop(reader, writer, self))
+                    elif operator == 'block':
+                        root.add_chunk(_StatementBlock(reader, writer, self))
+                    elif operator == 'extends':
+                        root.add_chunk(_StatementExtends(reader, writer, self))
+                    else:
+                        raise TemplateParseError(reader)
             else:
                 root.add_chunk(_Text(reader, writer))
