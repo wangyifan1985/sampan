@@ -2,7 +2,43 @@
 # coding: utf-8
 
 """
-A tiny template system
+    A extensible template system inspired by tornado.template.
+
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | Tag    | Operator  | Keywords        | Examples                                    | Handler            |
+    +========+===========+=================+=============================================+====================+
+    | {# #}  |           |                 | {# this is comment #}                       | _Comment           |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {{ }}  |           |                 | {{ toto }},   {{ 'toto'.upper() }}          | _Expression        |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | import    |                 | {% import html %}                           | _Statement         |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | from      | import          | {% from html import escape %}               | _Statement         |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | set       |                 | {% set toto=1 %}                            | _Statement         |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | break     |                 | {% break %}                                 | _Statement         |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | continue  |                 | {% continue %}                              | _Statement         |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | pass      |                 | {% pass %}                                  | _Statement         |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | comment   |                 | {% comment this is comment %}               | _StatementComment  |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | raw       |                 | {% raw toto %}                              | _StatementRaw      |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | if        | else, elif, end | {% if toto > 10 %}...{% else %}...{% end %} | _StatementIf       |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | for       | in, end         | {% for toto in toto_list %}...{% end %}     | _StatementLoop     |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | while     | end             | {% while toto > 10 %}...{% end %}           | _StatementLoop     |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | include   |                 | {% include path/to/file %}                  | _StatementInclude  |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | block     | end             | {% block toto %}...{% end %}                | _StatementBlock    |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    | {% %}  | extends   |                 | {% extends path/to/file %}                  | _StatementExtends  |
+    +--------+-----------+-----------------+---------------------------------------------+--------------------+
 """
 
 import re
@@ -45,13 +81,13 @@ class TemplateError(SampanError):
 
 
 class TemplateParseError(TemplateError):
-    def __init__(self, reader, msg: str='Can not parse template: '):
+    def __init__(self, reader, msg: str='Exception parsing template: '):
         super(TemplateParseError, self).__init__(msg)
         self.reader = reader
 
     def __str__(self):
         line, col = self.linecol(self.reader.s, self.reader.pos)
-        return ''.join((self.msg, line, ' : ', col))
+        return ''.join((self.msg, 'line ', line, ' - ', 'column ', col))
 
 
 # Template ####################################################################
@@ -191,7 +227,7 @@ class _Expression(_Node):
         writer.write_line(f'tt_tmp = {self.exp}')
         writer.write_line('if isinstance(tt_tmp, str): tt_tmp = tt_str(tt_tmp)')
         if self.autoescape is not None:
-            writer.write_line(f'tt_tmp = tt_str({self.autoescape}(tt_tmp))')
+            writer.write_line(f'tt_tmp = tt_str(autoescape_{id(self.autoescape)}(tt_tmp))')
         writer.write_line('tt_buffer.append(tt_tmp)')
 
 
@@ -379,25 +415,30 @@ class _StatementExtends(_Statement):
 
 
 class Template:
-    regex_tag = re.compile(rf'{_Node.tag[0]}([#,{{,%]){WS}')
-    regex_operator = re.compile(rf'{_Node.tag[0]}%{WS}([a-zA-Z0-9_]+?){WS}')
+    regex_tag = re.compile(rf'{_Node.tag[0]}([#,{{,%])')
+    regex_operator = re.compile(rf'{_Node.tag[0]}%{WS}([a-zA-Z0-9_]+)')
 
     def __init__(self, raw: str, name: str=STR_NAME, autoescape: typing.Callable=None, loader=None):
         self.name = name
+        self.autoescape = loader.auotescape if loader and loader.auotescape else autoescape
         self.root = self.parse(raw)
+        print('*******************')
+        print(self.root.chunks)
+        print('*******************')
         self.compiled = self.compile(loader)
         self.namespace = {
             'tt_str': lambda s: s.decode(ENCODING) if isinstance(s, bytes) else str(s),
-            'escape': escape,
             'html_escape': escape,
-            'url_escape': quote,
+            'url_quote': quote,
             'json_encode': dumps,
             'squeeze': lambda s: re.sub(r'[\x00-\x20]+', ' ', s).strip(),
             'datetime': datetime
         }
+        if self.autoescape:
+            self.namespace[f'autoescape_{id(self.autoescape)}'] = self.autoescape
         if loader and loader.namespace:
             self.namespace.update(loader.namespace)
-        self.autoescape = loader.auotescape if loader and loader.auotescape else autoescape
+
 
     def parse(self, raw: str) -> _File:
         reader = _Reader(raw)
@@ -409,7 +450,7 @@ class Template:
                 if tag == '#':
                     root.add_chunk(_Comment(reader=reader))
                 elif tag == '{':
-                    root.add_chunk(_Expression(reader=reader))
+                    root.add_chunk(_Expression(reader=reader, autoescape=self.autoescape))
                 elif tag == '%':
                     operator = reader.match(self.regex_operator).group(1)
                     if operator in ('import', 'from', 'set', 'break', 'continue', 'pass'):
@@ -422,14 +463,16 @@ class Template:
                         root.add_chunk(_StatementIf(self, reader=reader))
                     elif operator in ('for', 'while'):
                         root.add_chunk(_StatementLoop(self, reader=reader))
+                    elif operator == 'include':
+                        root.add_chunk(_StatementInclude(self, reader=reader))
                     elif operator == 'block':
                         root.add_chunk(_StatementBlock(self, reader=reader))
                     elif operator == 'extends':
                         root.add_chunk(_StatementExtends(self, reader=reader))
                     else:
-                        raise TemplateParseError(reader)
+                        raise TemplateParseError(reader, f'Unknown operator "{operator}" found in {self.name}: ')
                 else:
-                    raise TemplateParseError(reader)
+                    raise TemplateParseError(reader, f'Unknown tag "{tag}" found in {self.name}: ')
             else:
                 root.add_chunk(_Text(reader=reader))
         return root
@@ -454,7 +497,9 @@ class Template:
                 ancestor.find_blocks(loader, named_blocks)
             writer = _Writer(buffer, named_blocks, ancestors[0].template)
             ancestors[0].generate(writer)
+            print('*******************')
             print(buffer.getvalue())
+            print('*******************')
             return compile(buffer.getvalue(), f"{self.name.replace('.', '_')}.gen.py", 'exec', dont_inherit=True)
         finally:
             buffer.close()
