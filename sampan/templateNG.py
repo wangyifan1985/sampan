@@ -4,41 +4,41 @@
 """
     A extensible template system inspired by tornado.template.
 
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | Tag    | Operator  | Keywords        | Examples                                    | Handler            |
-    +========+===========+=================+=============================================+====================+
-    | {# #}  |           |                 | {# this is comment #}                       | _Comment           |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {{ }}  |           |                 | {{ toto }},   {{ 'toto'.upper() }}          | _Expression        |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | import    |                 | {% import html %}                           | _Statement         |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | from      | import          | {% from html import escape %}               | _Statement         |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | set       |                 | {% set toto=1 %}                            | _Statement         |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | break     |                 | {% break %}                                 | _Statement         |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | continue  |                 | {% continue %}                              | _Statement         |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | pass      |                 | {% pass %}                                  | _Statement         |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | comment   |                 | {% comment this is comment %}               | _StatementComment  |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | raw       |                 | {% raw toto %}                              | _StatementRaw      |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | if        | else, elif, end | {% if toto > 10 %}...{% else %}...{% end %} | _StatementIf       |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | for       | in, end         | {% for toto in toto_list %}...{% end %}     | _StatementLoop     |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | while     | end             | {% while toto > 10 %}...{% end %}           | _StatementLoop     |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | include   |                 | {% include path/to/file %}                  | _StatementInclude  |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | block     | end             | {% block toto %}...{% end %}                | _StatementBlock    |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
-    | {% %}  | extends   |                 | {% extends path/to/file %}                  | _StatementExtends  |
-    +--------+-----------+-----------------+---------------------------------------------+--------------------+
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | Tag    | Operator   | Keywords        | Examples                                    | Handler              |
+    +========+============+=================+=============================================+======================+
+    | {# #}  |            |                 | {# this is comment #}                       | _Comment             |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {{ }}  |            |                 | {{ toto }},   {{ 'toto'.upper() }}          | _Expression          |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | import     |                 | {% import html %}                           | _Statement           |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | from       | import          | {% from html import escape %}               | _Statement           |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | set        |                 | {% set toto=1 %}                            | _Statement           |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | break      |                 | {% break %}                                 | _Statement           |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | continue   |                 | {% continue %}                              | _Statement           |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | autoescape |                 | {% autoescape toto %}                       | _StatementAutoescape |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | comment    |                 | {% comment this is comment %}               | _StatementComment    |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | raw        |                 | {% raw toto %}                              | _StatementRaw        |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | if         | else, elif, end | {% if toto > 10 %}...{% else %}...{% end %} | _StatementIf         |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | for        | in, end         | {% for toto in toto_list %}...{% end %}     | _StatementLoop       |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | while      | end             | {% while toto > 10 %}...{% end %}           | _StatementLoop       |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | include    |                 | {% include path/to/file %}                  | _StatementInclude    |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | block      | end             | {% block toto %}...{% end %}                | _StatementBlock      |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
+    | {% %}  | extends    |                 | {% extends path/to/file %}                  | _StatementExtends    |
+    +--------+------------+-----------------+---------------------------------------------+----------------------+
 """
 
 import re
@@ -218,16 +218,16 @@ class _Expression(_Node):
     tag = (f'{_Node.tag[0]}{{', f'}}{_Node.tag[1]}')
     regex = re.compile(rf'{tag[0]}{WS}(.+?){WS}{tag[1]}')
 
-    def __init__(self, autoescape=None, **kwargs):
+    def __init__(self, template, **kwargs):
         super(_Expression, self).__init__(**kwargs)
+        self.template = template
         self.exp = self.reader.consume(self.regex).group(1)
-        self.autoescape = autoescape
     
     def generate(self, writer: _Writer):
         writer.write_line(f'tt_tmp = {self.exp}')
         writer.write_line('if isinstance(tt_tmp, str): tt_tmp = tt_str(tt_tmp)')
-        if self.autoescape is not None:
-            writer.write_line(f'tt_tmp = tt_str(autoescape_{id(self.autoescape)}(tt_tmp))')
+        if self.template.autoescape is not None:
+            writer.write_line(f'tt_tmp = tt_str(autoescape_{id(self.template.autoescape)}(tt_tmp))')
         writer.write_line('tt_buffer.append(tt_tmp)')
 
 
@@ -267,10 +267,16 @@ class _StatementAutoescape(_Statement):
     def __init__(self, template, **kwargs):
         super(_StatementAutoescape, self).__init__(**kwargs)
         self.template = template
-        _, _, self.autoescape = self.stat.partition(' ')
+        _, _, self.name = self.stat.partition(' ')
 
     def generate(self, writer: _Writer):
-        self.template.autoescape = None if self.autoescape == 'None' else self.template.namespace[self.autoescape]
+        if self.name == 'None':
+            self.template.autoescape = None
+        else:
+            _ns = self.template.namespace
+            if self.name not in _ns:
+                raise TemplateError(f'Unknown autoescape function "{self.name}".')
+            self.template.autoescape = _ns.setdefault(f'autoescape_{id(_ns[self.name])}', _ns[self.name])
 
 
 class _StatementModule(_Statement):
@@ -420,12 +426,6 @@ class Template:
 
     def __init__(self, raw: str, name: str=STR_NAME, autoescape: typing.Callable=None, loader=None):
         self.name = name
-        self.autoescape = loader.auotescape if loader and loader.auotescape else autoescape
-        self.root = self.parse(raw)
-        print('*******************')
-        print(self.root.chunks)
-        print('*******************')
-        self.compiled = self.compile(loader)
         self.namespace = {
             'tt_str': lambda s: s.decode(ENCODING) if isinstance(s, bytes) else str(s),
             'html_escape': escape,
@@ -434,11 +434,16 @@ class Template:
             'squeeze': lambda s: re.sub(r'[\x00-\x20]+', ' ', s).strip(),
             'datetime': datetime
         }
-        if self.autoescape:
-            self.namespace[f'autoescape_{id(self.autoescape)}'] = self.autoescape
         if loader and loader.namespace:
             self.namespace.update(loader.namespace)
-
+        self.autoescape = loader.autoescape if loader and loader.auotescape else autoescape
+        if self.autoescape:
+            self.namespace.setdefault(f'autoescape_{id(self.autoescape)}', self.autoescape)
+        self.root = self.parse(raw)
+        print('*******************')
+        print(self.root.chunks)
+        print('*******************')
+        self.compiled = self.compile(loader)
 
     def parse(self, raw: str) -> _File:
         reader = _Reader(raw)
@@ -450,7 +455,7 @@ class Template:
                 if tag == '#':
                     root.add_chunk(_Comment(reader=reader))
                 elif tag == '{':
-                    root.add_chunk(_Expression(reader=reader, autoescape=self.autoescape))
+                    root.add_chunk(_Expression(template=self, reader=reader))
                 elif tag == '%':
                     operator = reader.match(self.regex_operator).group(1)
                     if operator in ('import', 'from', 'set', 'break', 'continue', 'pass'):
@@ -459,16 +464,18 @@ class Template:
                         root.add_chunk(_StatementComment(reader=reader))
                     elif operator == 'raw':
                         root.add_chunk(_StatementRaw(reader=reader))
+                    elif operator == 'autoescape':
+                        root.add_chunk(_StatementAutoescape(template=self, reader=reader))
                     elif operator == 'if':
-                        root.add_chunk(_StatementIf(self, reader=reader))
+                        root.add_chunk(_StatementIf(template=self, reader=reader))
                     elif operator in ('for', 'while'):
-                        root.add_chunk(_StatementLoop(self, reader=reader))
+                        root.add_chunk(_StatementLoop(template=self, reader=reader))
                     elif operator == 'include':
-                        root.add_chunk(_StatementInclude(self, reader=reader))
+                        root.add_chunk(_StatementInclude(template=self, reader=reader))
                     elif operator == 'block':
-                        root.add_chunk(_StatementBlock(self, reader=reader))
+                        root.add_chunk(_StatementBlock(template=self, reader=reader))
                     elif operator == 'extends':
-                        root.add_chunk(_StatementExtends(self, reader=reader))
+                        root.add_chunk(_StatementExtends(template=self, reader=reader))
                     else:
                         raise TemplateParseError(reader, f'Unknown operator "{operator}" found in {self.name}: ')
                 else:
