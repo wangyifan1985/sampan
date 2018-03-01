@@ -11,15 +11,15 @@
     +--------+------------+-----------------+---------------------------------------------+----------------------+
     | {{ }}  |            |                 | {{ toto }},   {{ 'toto'.upper() }}          | _Expression          |
     +--------+------------+-----------------+---------------------------------------------+----------------------+
-    | {% %}  | import     |                 | {% import html %}                           | _Statement           |
+    | {% %}  | import     |                 | {% import html %}                           | _StatementInline     |
     +--------+------------+-----------------+---------------------------------------------+----------------------+
-    | {% %}  | from       | import          | {% from html import escape %}               | _Statement           |
+    | {% %}  | from       | import          | {% from html import escape %}               | _StatementInline     |
     +--------+------------+-----------------+---------------------------------------------+----------------------+
-    | {% %}  | set        |                 | {% set toto=1 %}                            | _Statement           |
+    | {% %}  | set        |                 | {% set toto=1 %}                            | _StatementInline     |
     +--------+------------+-----------------+---------------------------------------------+----------------------+
-    | {% %}  | break      |                 | {% break %}                                 | _Statement           |
+    | {% %}  | break      |                 | {% break %}                                 | _StatementInline     |
     +--------+------------+-----------------+---------------------------------------------+----------------------+
-    | {% %}  | continue   |                 | {% continue %}                              | _Statement           |
+    | {% %}  | continue   |                 | {% continue %}                              | _StatementInline     |
     +--------+------------+-----------------+---------------------------------------------+----------------------+
     | {% %}  | autoescape |                 | {% autoescape toto %}                       | _StatementAutoescape |
     +--------+------------+-----------------+---------------------------------------------+----------------------+
@@ -162,33 +162,46 @@ class _Node:
     def each_child(self):
         return ()
 
-    def find_blocks(self, loader, named_blocks):
+    def find_named_blocks(self, loader, named_blocks):
         for child in self.each_child():
-            child.find_blocks(loader, named_blocks)
+            child.find_named_blocks(loader, named_blocks)
 
     def generate(self, writer: _Writer):
         raise NotImplementedError
 
 
-class _File(_Node):
-    def __init__(self, template):
-        super(_File, self).__init__()
-        self.template = template
+class _Body(_Node):
+    def __init__(self):
+        super(_Body, self).__init__()
         self.chunks = []
+
+    def add_chunk(self, node: _Node):
+        self.chunks.append(node)
 
     def each_child(self):
         return self.chunks
 
     def generate(self, writer: _Writer):
+        for chunk in self.chunks:
+            chunk.generate(writer)
+
+
+class _File(_Node):
+    def __init__(self, template, body: _Body):
+        super(_File, self).__init__()
+        self.template = template
+        self.body = body
+
+    def each_child(self):
+        return self.body,
+
+    def generate(self, writer: _Writer):
         writer.write_line('def tt_execute():')
         with writer.indent():
             writer.write_line('tt_buffer = []')
-            for chunk in self.chunks:
-                chunk.generate(writer)
+            writer.write_line('tt_append = tt_buffer.append')
+            self.body.generate(writer)
             writer.write_line("return tt_str('').join(tt_buffer)")
-
-    def add_chunk(self, chunk: _Node):
-        self.chunks.append(chunk)
 
 
 class _Text(_Node):
@@ -199,7 +212,7 @@ class _Text(_Node):
         self.text = self.reader.consume(self.regex).group()
 
     def generate(self, writer: _Writer):
-        writer.write_line(f'tt_buffer.append({repr(to_str(self.text))})')
+        writer.write_line(f'tt_append({repr(to_str(self.text))})')
 
 
 class _Comment(_Node):
@@ -228,23 +241,31 @@ class _Expression(_Node):
         writer.write_line('if isinstance(tt_tmp, str): tt_tmp = tt_str(tt_tmp)')
         if self.template.autoescape is not None:
             writer.write_line(f'tt_tmp = tt_str(autoescape_{id(self.template.autoescape)}(tt_tmp))')
-        writer.write_line('tt_buffer.append(tt_tmp)')
+        writer.write_line('tt_append(tt_tmp)')
 
 
 class _Statement(_Node):
     tag = (f'{_Node.tag[0]}%', f'%{_Node.tag[1]}')
-    regex = re.compile(rf'{tag[0]}{WS}([a-zA-Z0-9_]+?{WS}.+?){WS}{tag[1]}')
-    regex_end = re.compile(rf'{tag[0]}{WS}end{WS}{tag[1]}')
-
+    
     def __init__(self, **kwargs):
         super(_Statement, self).__init__(**kwargs)
+
+    def generate(self, writer: _Writer):
+        raise NotImplementedError
+
+
+class _StatementInline(_Statement):
+    regex = re.compile(rf'{_Statement.tag[0]}{WS}([a-zA-Z0-9_]+?{WS}.+?){WS}{_Statement.tag[1]}')
+
+    def __init__(self, **kwargs):
+        super(_StatementInline, self).__init__(**kwargs)
         self.stat = self.reader.consume(self.regex).group(1)
 
     def generate(self, writer: _Writer):
         writer.write_line(self.stat)
 
 
-class _StatementComment(_Statement):
+class _StatementComment(_StatementInline):
     def __init__(self, **kwargs):
         super(_StatementComment, self).__init__(**kwargs)
 
@@ -252,18 +273,18 @@ class _StatementComment(_Statement):
         pass
 
 
-class _StatementRaw(_Statement):
+class _StatementRaw(_StatementInline):
     def __init__(self, **kwargs):
         super(_StatementRaw, self).__init__(**kwargs)
-        _, _, self.stat = self.stat.partition(' ')
+        _, _, self.exp = self.stat.partition(' ')
 
     def generate(self, writer: _Writer):
-        writer.write_line(f'tt_tmp = {self.stat}')
+        writer.write_line(f'tt_tmp = {self.exp}')
         writer.write_line('if isinstance(tt_tmp, str): tt_tmp = tt_str(tt_tmp)')
-        writer.write_line('tt_buffer.append(tt_tmp)')
+        writer.write_line('tt_append(tt_tmp)')
 
 
-class _StatementAutoescape(_Statement):
+class _StatementAutoescape(_StatementInline):
     def __init__(self, template, **kwargs):
         super(_StatementAutoescape, self).__init__(**kwargs)
         self.template = template
@@ -279,55 +300,45 @@ class _StatementAutoescape(_Statement):
             self.template.autoescape = _ns.setdefault(f'autoescape_{id(_ns[self.name])}', _ns[self.name])
 
 
-class _StatementModule(_Statement):
-    def __init__(self, **kwargs):
-        super(_StatementModule, self).__init__(**kwargs)
-        _, _, self.module = self.stat.partition(' ')
-
-    def generate(self, writer: _Writer):
-        writer.write_line(f'tt_modules.{self.module}')
-
-
 class _StatementIf(_Statement):
-    regex = re.compile(rf'{_Statement.tag[0]}{WS}((?:if|else|elif){WS}.+?){WS}{_Statement.tag[1]}'
+    regex = re.compile(rf'{_Statement.tag[0]}{WS}((?:if|else|elif).*?){WS}{_Statement.tag[1]}'
                        rf'((?:(?!{_Statement.tag[0]}{WS}(?:else|elif|end)).)*)', RE_FLAGS)
+    regex_end = re.compile(rf'{_Statement.tag[0]}{WS}end{WS}{_Statement.tag[1]}')
 
     def __init__(self, template, **kwargs):
         super(_StatementIf, self).__init__(**kwargs)
         self.template = template
-        self.stats = []
+        self.stats = {}
         _m = self.reader.consume(self.regex)
-        while _m is not None:
-            self.stats = (_m.group(1), self.template.parse(_Reader(_m.group(2))))
+        while _m:
+            self.stats[_m.group(1)] = self.template.parse(_m.group(2))
             _m = self.reader.consume(self.regex)
         else:
             self.reader.consume(self.regex_end)
 
     def generate(self, writer: _Writer):
-        for stat in self.stats:
-            writer.write_line(f'{stat[0]}:')
+        print(self.stats)
+        for cond, stat in self.stats.items():
+            writer.write_line(f'{cond}:')
             with writer.indent():
-                if stat[1] is not None:
-                    stat[1].generate()
-                else:
-                    writer.write_line('pass')
+                stat.generate(writer)
 
 
 class _StatementLoop(_Statement):
     regex = re.compile(rf'{_Statement.tag[0]}{WS}((?:for|while){WS}.+?){WS}{_Statement.tag[1]}'
-                       rf'(.+?){_Statement.regex_end.pattern}', RE_FLAGS)
+                       rf'(.+?){_Statement.tag[0]}{WS}end{WS}{_Statement.tag[1]}', RE_FLAGS)
 
     def __init__(self, template, **kwargs):
         super(_StatementLoop, self).__init__(**kwargs)
         self.template = template
         _m = self.reader.consume(self.regex)
         self.cond = _m.group(1)
-        self.stat = _m.group(2)
+        self.stat = self.template.parse(_m.group(2))
 
     def generate(self, writer: _Writer):
         writer.write_line(f'{self.cond}:')
         with writer.indent():
-            writer.write_line(f'{self.stat}')
+            self.stat.generate(writer)
 
 
 class _StatementTry(_Statement):
@@ -364,27 +375,27 @@ class _StatementInclude(_Statement):
 
     def find_blocks(self, loader, named_blocks):
         included = loader.load(self.name)
-        included.root.find_blocks(loader, named_blocks)
+        included.file.find_blocks(loader, named_blocks)
 
     def generate(self, writer: _Writer):
         included = writer.loader.load(self.name)
         with writer.include(included):
-            included.root
+            included.file
 
 
 class _StatementBlock(_Statement):
     regex = re.compile(rf'{_Statement.tag[0]}{WS}(block{WS}.+?){WS}{_Statement.tag[1]}'
-                       rf'(.+?){_Statement.regex_end.pattern}', RE_FLAGS)
+                       rf'(.+?){_Statement.tag[0]}{WS}end{WS}{_Statement.tag[1]}', RE_FLAGS)
 
     def __init__(self, template, **kwargs):
         super(_StatementBlock, self).__init__(**kwargs)
         self.template = template
         _m = self.reader.consume(self.regex)
         self.name = _m.group(1)
-        self.body = _m.group(2)
+        self.block = _m.group(2)
 
     def each_child(self):
-        return self.body
+        return self.block
 
     def find_blocks(self, loader, named_blocks):
         named_blocks[self.name] = self
@@ -393,8 +404,8 @@ class _StatementBlock(_Statement):
     def generate(self, writer: _Writer):
         if self.name not in self.template.cache:
             _buffer = StringIO()
-            _root = self.template.parse(_Reader(self.body), _Writer(_buffer))
-            _root.generate()
+            _body = self.template.parse(_Reader(self.block), _Writer(_buffer))
+            _body.generate()
             self.template.cache[self.name] = _buffer.getvalue()
 
 
@@ -415,8 +426,8 @@ class _StatementExtends(_Statement):
         if self.name not in self.template.cache:
             _buffer = StringIO()
             with open(self.name, mode='r', encoding=ENCODING) as f:
-                _root = self.template.parse(_Reader(f.read()), _Writer(_buffer))
-                _root.generate()
+                _body = self.template.parse(_Reader(f.read()), _Writer(_buffer))
+                _body.generate()
             self.template.cache[self.name] = _buffer.getvalue()
 
 
@@ -439,54 +450,59 @@ class Template:
         self.autoescape = loader.autoescape if loader and loader.auotescape else autoescape
         if self.autoescape:
             self.namespace.setdefault(f'autoescape_{id(self.autoescape)}', self.autoescape)
-        self.root = self.parse(raw)
-        print('*******************')
-        print(self.root.chunks)
-        print('*******************')
+        self.file = _File(self, self.parse(raw))
+        print('+++++++++++++++')
+        print(self.file.body.chunks)
+        print('+++++++++++++++')
         self.compiled = self.compile(loader)
 
-    def parse(self, raw: str) -> _File:
+    def parse(self, raw: str, in_loop=False) -> _Body:
+        body = _Body()
         reader = _Reader(raw)
-        root = _File(self)
         while reader.remain() > 0:
             m = reader.match(self.regex_tag)
             if m:
                 tag = m.group(1)
                 if tag == '#':
-                    root.add_chunk(_Comment(reader=reader))
+                    body.add_chunk(_Comment(reader=reader))
                 elif tag == '{':
-                    root.add_chunk(_Expression(template=self, reader=reader))
+                    body.add_chunk(_Expression(template=self, reader=reader))
                 elif tag == '%':
                     operator = reader.match(self.regex_operator).group(1)
-                    if operator in ('import', 'from', 'set', 'break', 'continue', 'pass'):
-                        root.add_chunk(_Statement(reader=reader))
+                    if operator in ('import', 'from', 'set'):
+                        body.add_chunk(_StatementInline(reader=reader))
+                    elif operator in ('break', 'continue'):
+                        if not in_loop:
+                            raise TemplateParseError(reader, f'Incorrect operator "{operator}" position found '
+                                                             f'in {self.name}: ')
+                        body.add_chunk(_StatementInline(reader=reader))
                     elif operator == 'comment':
-                        root.add_chunk(_StatementComment(reader=reader))
+                        body.add_chunk(_StatementComment(reader=reader))
                     elif operator == 'raw':
-                        root.add_chunk(_StatementRaw(reader=reader))
+                        body.add_chunk(_StatementRaw(reader=reader))
                     elif operator == 'autoescape':
-                        root.add_chunk(_StatementAutoescape(template=self, reader=reader))
+                        body.add_chunk(_StatementAutoescape(template=self, reader=reader))
                     elif operator == 'if':
-                        root.add_chunk(_StatementIf(template=self, reader=reader))
+                        body.add_chunk(_StatementIf(template=self, reader=reader))
                     elif operator in ('for', 'while'):
-                        root.add_chunk(_StatementLoop(template=self, reader=reader))
+                        body.add_chunk(_StatementLoop(template=self, reader=reader))
                     elif operator == 'include':
-                        root.add_chunk(_StatementInclude(template=self, reader=reader))
+                        body.add_chunk(_StatementInclude(template=self, reader=reader))
                     elif operator == 'block':
-                        root.add_chunk(_StatementBlock(template=self, reader=reader))
+                        body.add_chunk(_StatementBlock(template=self, reader=reader))
                     elif operator == 'extends':
-                        root.add_chunk(_StatementExtends(template=self, reader=reader))
+                        body.add_chunk(_StatementExtends(template=self, reader=reader))
                     else:
                         raise TemplateParseError(reader, f'Unknown operator "{operator}" found in {self.name}: ')
                 else:
                     raise TemplateParseError(reader, f'Unknown tag "{tag}" found in {self.name}: ')
             else:
-                root.add_chunk(_Text(reader=reader))
-        return root
+                body.add_chunk(_Text(reader=reader))
+        return body
 
     def get_ancestors(self, loader):
-        ancestors = [self.root]
-        for chunk in self.root.chunks:
+        ancestors = [self.file]
+        for chunk in self.file.body.chunks:
             if isinstance(chunk, _StatementExtends):
                 if not loader:
                     raise TemplateError('{% extends %} block found, but no template loader')
@@ -501,7 +517,7 @@ class Template:
             ancestors = self.get_ancestors(loader)
             ancestors.reverse()
             for ancestor in ancestors:
-                ancestor.find_blocks(loader, named_blocks)
+                ancestor.find_named_blocks(loader, named_blocks)
             writer = _Writer(buffer, named_blocks, ancestors[0].template)
             ancestors[0].generate(writer)
             print('*******************')

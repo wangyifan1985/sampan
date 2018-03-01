@@ -2,7 +2,8 @@
 # coding: utf-8
 
 from unittest import TestCase
-from ..templateNG import Template
+from ..templateNG import Template, _StatementIf
+from ..template import Template as T2
 from html import escape
 from pprint import pprint
 
@@ -60,6 +61,7 @@ class TestTemplate(TestCase):
         t = Template(txt)
         self.assertEqual(t.generate(), txt)
 
+
     def test_comment(self):
         cmt = """<html>\n<body>\n\n<h1>{# this is comment #}My First Heading</h1>\n<p>My first paragraph.</p>\n\n</body></html>"""
         expected = """<html>\n<body>\n\n<h1>My First Heading</h1>\n<p>My first paragraph.</p>\n\n</body></html>"""
@@ -108,3 +110,39 @@ class TestTemplate(TestCase):
         t = Template(sts_esc, autoescape=repr)
         self.assertEqual(t.generate(h1='My First Heading', p='My "first" paragraph.', footer='My "footer" here'),
                          expected)
+
+    def test_sts_if_end(self):
+        sts_if = """<html>\n<body>\n\n{% if h1 == True %} <h1>My First Heading</h1> {% end %}\n<p>My first paragraph.</p>\n\n</body></html>"""
+        expected_h1_true = """<html>\n<body>\n\n <h1>My First Heading</h1> \n<p>My first paragraph.</p>\n\n</body></html>"""
+        expected_h1_false = """<html>\n<body>\n\n\n<p>My first paragraph.</p>\n\n</body></html>"""
+        t = Template(sts_if)
+        self.assertEqual(t.generate(h1=True), expected_h1_true)
+        self.assertEqual(t.generate(h1=False), expected_h1_false)
+
+    def test_sts_if_else_end(self):
+        sts_if = """<html>\n<body>\n\n{% if h1 == True %} <h1>First Heading</h1> {% else %} <h2>Second Heading</h2> {% end %}\n<p>My first paragraph.</p>\n\n</body></html>"""
+        expected_h1_true = """<html>\n<body>\n\n <h1>First Heading</h1> \n<p>My first paragraph.</p>\n\n</body></html>"""
+        expected_h1_false = """<html>\n<body>\n\n <h2>Second Heading</h2> \n<p>My first paragraph.</p>\n\n</body></html>"""
+        print(_StatementIf.regex.pattern)
+        t = Template(sts_if)
+        self.assertEqual(t.generate(h1=True), expected_h1_true)
+        self.assertEqual(t.generate(h1=False), expected_h1_false)
+
+    def test_sts_if_elif_else_end(self):
+        sts_if = """<html>\n<body>\n\n{% if h == 1 %} <h1>First Heading</h1> {% elif h == 2 %} <h2>Second Heading</h2> {% else %} <h3>Third Heading</h3> {% end %}\n<p>My first paragraph.</p>\n\n</body></html>"""
+        expected_h_1 = """<html>\n<body>\n\n <h1>First Heading</h1> \n<p>My first paragraph.</p>\n\n</body></html>"""
+        expected_h_2 = """<html>\n<body>\n\n <h2>Second Heading</h2> \n<p>My first paragraph.</p>\n\n</body></html>"""
+        expected_h_3 = """<html>\n<body>\n\n <h3>Third Heading</h3> \n<p>My first paragraph.</p>\n\n</body></html>"""
+        t = Template(sts_if)
+        self.assertEqual(t.generate(h=1), expected_h_1)
+        self.assertEqual(t.generate(h=2), expected_h_2)
+        self.assertEqual(t.generate(h=3), expected_h_3)
+
+    def test_sts_for(self):
+        sts_for = """<html>\n<body>\n<ul>{% for student in students %}\n<li>{{ student }}</li>{% end %}\n</ul>\n</body>\n</html>"""
+        expected = """<html>\n<body>\n<ul>\n<li>toto</li>\n<li>haha</li>\n</ul>\n</body>\n</html>"""
+        t = Template(sts_for)
+        self.assertEqual(t.generate(students=('toto', 'haha')), expected)
+
+    def test_sts_while(self):
+        sts_while = """<html>\n<body>\n<ul>{% for student in students %}\n<li>{{ student }}</li>{% end %}\n</ul>\n</body>\n</html>"""

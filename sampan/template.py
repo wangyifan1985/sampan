@@ -166,6 +166,7 @@ if you need to include a literal ``{{``, ``{%``, or ``{#`` in the output.
 import datetime
 import linecache
 import os
+import sys
 import threading
 from io import StringIO
 from html import escape
