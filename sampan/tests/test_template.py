@@ -145,4 +145,13 @@ class TestTemplate(TestCase):
         self.assertEqual(t.generate(students=('toto', 'haha')), expected)
 
     def test_sts_while(self):
-        sts_while = """<html>\n<body>\n<ul>{% for student in students %}\n<li>{{ student }}</li>{% end %}\n</ul>\n</body>\n</html>"""
+        sts_while = """<html>\n<body>\n{% set a = 1 %}<ul>{% while a < 3 %} \n<li>{{ student + str(a) }}{% set a += 1 %}</li>{% end %}\n</ul>\n</body>\n</html>"""
+        expected = """<html>\n<body>\n<ul> \n<li>toto1</li> \n<li>toto2</li>\n</ul>\n</body>\n</html>"""
+        t = Template(sts_while)
+        self.assertEqual(t.generate(student='toto'), expected)
+
+    def test_sts_for_break(self):
+        sts_for = """<html>\n<body>\n<ul>{% for student in students %}\n<li>{{ student }}</li>{% break %}{% end %}\n</ul>\n</body>\n</html>"""
+        t = Template(sts_for)
+        print(t.generate(students=('toto', 'haha')))
+

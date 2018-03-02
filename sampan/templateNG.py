@@ -273,6 +273,15 @@ class _StatementComment(_StatementInline):
         pass
 
 
+class _StatementSet(_StatementInline):
+    def __init__(self, **kwargs):
+        super(_StatementSet, self).__init__(**kwargs)
+        _, _, self.exp = self.stat.partition(' ')
+
+    def generate(self, writer: _Writer):
+        writer.write_line(self.exp)
+
+
 class _StatementRaw(_StatementInline):
     def __init__(self, **kwargs):
         super(_StatementRaw, self).__init__(**kwargs)
@@ -300,6 +309,9 @@ class _StatementAutoescape(_StatementInline):
             self.template.autoescape = _ns.setdefault(f'autoescape_{id(_ns[self.name])}', _ns[self.name])
 
 
+
+
+
 class _StatementIf(_Statement):
     regex = re.compile(rf'{_Statement.tag[0]}{WS}((?:if|else|elif).*?){WS}{_Statement.tag[1]}'
                        rf'((?:(?!{_Statement.tag[0]}{WS}(?:else|elif|end)).)*)', RE_FLAGS)
@@ -311,7 +323,7 @@ class _StatementIf(_Statement):
         self.stats = {}
         _m = self.reader.consume(self.regex)
         while _m:
-            self.stats[_m.group(1)] = self.template.parse(_m.group(2))
+            self.stats[_m.group(1)] = self.template.parser.parse(_m.group(2))
             _m = self.reader.consume(self.regex)
         else:
             self.reader.consume(self.regex_end)
@@ -333,7 +345,8 @@ class _StatementLoop(_Statement):
         self.template = template
         _m = self.reader.consume(self.regex)
         self.cond = _m.group(1)
-        self.stat = self.template.parse(_m.group(2))
+        with self.template.parser.in_loop():
+            self.stat = self.template.parser.parse(_m.group(2))
 
     def generate(self, writer: _Writer):
         writer.write_line(f'{self.cond}:')
@@ -431,6 +444,81 @@ class _StatementExtends(_Statement):
             self.template.cache[self.name] = _buffer.getvalue()
 
 
+class _Parser:
+    def __init__(self, template, in_loop=False, in_block=False):
+        self.template = template
+        self._in_loop = in_loop
+        self._in_block = in_block
+
+    def in_loop(self):
+        class InLoop:
+            def __enter__(_):
+                self._in_loop = True
+                return self
+
+            def __exit__(_, *args):
+                assert self._in_loop
+                self._in_loop = False
+        return InLoop()
+
+    def in_block(self):
+        class InBlock:
+            def __enter__(_):
+                self._in_block = True
+                return self
+
+            def __exit__(_, *args):
+                assert self._in_block
+                self._in_block = False
+        return InBlock()
+
+    def parse(self, raw: str) -> _Body:
+        body = _Body()
+        reader = _Reader(raw)
+        while reader.remain() > 0:
+            m = reader.match(self.template.regex_tag)
+            if m:
+                tag = m.group(1)
+                if tag == '#':
+                    body.add_chunk(_Comment(reader=reader))
+                elif tag == '{':
+                    body.add_chunk(_Expression(template=self.template, reader=reader))
+                elif tag == '%':
+                    operator = reader.match(self.template.regex_operator).group(1)
+                    if operator in ('import', 'from'):
+                        body.add_chunk(_StatementInline(reader=reader))
+                    elif operator in ('break', 'continue'):
+                        if not self._in_loop:
+                            raise TemplateParseError(reader, f'Incorrect operator "{operator}" position found '
+                                                             f'in {self.template.name}: ')
+                        body.add_chunk(_StatementInline(reader=reader))
+                    elif operator == 'set':
+                        body.add_chunk(_StatementSet(reader=reader))
+                    elif operator == 'comment':
+                        body.add_chunk(_StatementComment(reader=reader))
+                    elif operator == 'raw':
+                        body.add_chunk(_StatementRaw(reader=reader))
+                    elif operator == 'autoescape':
+                        body.add_chunk(_StatementAutoescape(template=self.template, reader=reader))
+                    elif operator == 'if':
+                        body.add_chunk(_StatementIf(template=self.template, reader=reader))
+                    elif operator in ('for', 'while'):
+                        body.add_chunk(_StatementLoop(template=self.template, reader=reader))
+                    elif operator == 'include':
+                        body.add_chunk(_StatementInclude(template=self.template, reader=reader))
+                    elif operator == 'block':
+                        body.add_chunk(_StatementBlock(template=self.template, reader=reader))
+                    elif operator == 'extends':
+                        body.add_chunk(_StatementExtends(template=self.template, reader=reader))
+                    else:
+                        raise TemplateParseError(reader, f'Unknown operator "{operator}" found in {self.template.name}: ')
+                else:
+                    raise TemplateParseError(reader, f'Unknown tag "{tag}" found in {self.template.name}: ')
+            else:
+                body.add_chunk(_Text(reader=reader))
+        return body
+
+
 class Template:
     regex_tag = re.compile(rf'{_Node.tag[0]}([#,{{,%])')
     regex_operator = re.compile(rf'{_Node.tag[0]}%{WS}([a-zA-Z0-9_]+)')
@@ -450,55 +538,12 @@ class Template:
         self.autoescape = loader.autoescape if loader and loader.auotescape else autoescape
         if self.autoescape:
             self.namespace.setdefault(f'autoescape_{id(self.autoescape)}', self.autoescape)
-        self.file = _File(self, self.parse(raw))
+        self.parser = _Parser(self)
+        self.file = _File(self, self.parser.parse(raw))
         print('+++++++++++++++')
         print(self.file.body.chunks)
         print('+++++++++++++++')
         self.compiled = self.compile(loader)
-
-    def parse(self, raw: str, in_loop=False) -> _Body:
-        body = _Body()
-        reader = _Reader(raw)
-        while reader.remain() > 0:
-            m = reader.match(self.regex_tag)
-            if m:
-                tag = m.group(1)
-                if tag == '#':
-                    body.add_chunk(_Comment(reader=reader))
-                elif tag == '{':
-                    body.add_chunk(_Expression(template=self, reader=reader))
-                elif tag == '%':
-                    operator = reader.match(self.regex_operator).group(1)
-                    if operator in ('import', 'from', 'set'):
-                        body.add_chunk(_StatementInline(reader=reader))
-                    elif operator in ('break', 'continue'):
-                        if not in_loop:
-                            raise TemplateParseError(reader, f'Incorrect operator "{operator}" position found '
-                                                             f'in {self.name}: ')
-                        body.add_chunk(_StatementInline(reader=reader))
-                    elif operator == 'comment':
-                        body.add_chunk(_StatementComment(reader=reader))
-                    elif operator == 'raw':
-                        body.add_chunk(_StatementRaw(reader=reader))
-                    elif operator == 'autoescape':
-                        body.add_chunk(_StatementAutoescape(template=self, reader=reader))
-                    elif operator == 'if':
-                        body.add_chunk(_StatementIf(template=self, reader=reader))
-                    elif operator in ('for', 'while'):
-                        body.add_chunk(_StatementLoop(template=self, reader=reader))
-                    elif operator == 'include':
-                        body.add_chunk(_StatementInclude(template=self, reader=reader))
-                    elif operator == 'block':
-                        body.add_chunk(_StatementBlock(template=self, reader=reader))
-                    elif operator == 'extends':
-                        body.add_chunk(_StatementExtends(template=self, reader=reader))
-                    else:
-                        raise TemplateParseError(reader, f'Unknown operator "{operator}" found in {self.name}: ')
-                else:
-                    raise TemplateParseError(reader, f'Unknown tag "{tag}" found in {self.name}: ')
-            else:
-                body.add_chunk(_Text(reader=reader))
-        return body
 
     def get_ancestors(self, loader):
         ancestors = [self.file]
