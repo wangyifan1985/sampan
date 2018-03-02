@@ -310,8 +310,6 @@ class _StatementAutoescape(_StatementInline):
 
 
 
-
-
 class _StatementIf(_Statement):
     regex = re.compile(rf'{_Statement.tag[0]}{WS}((?:if|else|elif).*?){WS}{_Statement.tag[1]}'
                        rf'((?:(?!{_Statement.tag[0]}{WS}(?:else|elif|end)).)*)', RE_FLAGS)
@@ -472,11 +470,10 @@ class _Parser:
                 self._in_block = False
         return InBlock()
 
-    def parse(self, raw: str) -> _Body:
+    def parse(self) -> _Body:
         body = _Body()
-        reader = _Reader(raw)
-        while reader.remain() > 0:
-            m = reader.match(self.template.regex_tag)
+        while self.template.reader.remain() > 0:
+            m = self.template.reader.match(self.template.regex_tag)
             if m:
                 tag = m.group(1)
                 if tag == '#':
@@ -484,7 +481,7 @@ class _Parser:
                 elif tag == '{':
                     body.add_chunk(_Expression(template=self.template, reader=reader))
                 elif tag == '%':
-                    operator = reader.match(self.template.regex_operator).group(1)
+                    operator = self.template.reader.match(self.template.regex_operator).group(1)
                     if operator in ('import', 'from'):
                         body.add_chunk(_StatementInline(reader=reader))
                     elif operator in ('break', 'continue'):
@@ -519,12 +516,26 @@ class _Parser:
         return body
 
 
+class _Loader:
+    def __init__(self, namespace=None, autoescape=None):
+        self.namespace = namespace or {}
+        self.autoescape = autoescape
+        self.templates = dict()
+        self.lock = threading.RLock()
+
+    def reset(self):
+        with self.lock:
+            self.templates = {}
+
+    def load(self, obj: str) -> Template:
+        raise NotImplementedError
+
+
 class Template:
     regex_tag = re.compile(rf'{_Node.tag[0]}([#,{{,%])')
     regex_operator = re.compile(rf'{_Node.tag[0]}%{WS}([a-zA-Z0-9_]+)')
 
-    def __init__(self, raw: str, name: str=STR_NAME, autoescape: typing.Callable=None, loader=None):
-        self.name = name
+    def __init__(self, raw: str, name: str=STR_NAME, autoescape: typing.Callable=None, loader: _Loader=None):
         self.namespace = {
             'tt_str': lambda s: s.decode(ENCODING) if isinstance(s, bytes) else str(s),
             'html_escape': escape,
@@ -533,13 +544,15 @@ class Template:
             'squeeze': lambda s: re.sub(r'[\x00-\x20]+', ' ', s).strip(),
             'datetime': datetime
         }
+        self.reader = _Reader(raw)
+        self.name = name
         if loader and loader.namespace:
             self.namespace.update(loader.namespace)
-        self.autoescape = loader.autoescape if loader and loader.auotescape else autoescape
+        self.autoescape = loader.autoescape if loader and loader.autoescape else autoescape
         if self.autoescape:
             self.namespace.setdefault(f'autoescape_{id(self.autoescape)}', self.autoescape)
         self.parser = _Parser(self)
-        self.file = _File(self, self.parser.parse(raw))
+        self.file = _File(self, self.parser.parse())
         print('+++++++++++++++')
         print(self.file.body.chunks)
         print('+++++++++++++++')
@@ -584,21 +597,6 @@ class Template:
 
 # Loader ######################################################################
 ###############################################################################
-class _Loader:
-    def __init__(self, namespace=None, auotescape=None):
-        self.namespace = namespace or {}
-        self.auotescape = auotescape
-        self.templates = dict()
-        self.lock = threading.RLock()
-
-    def reset(self):
-        with self.lock:
-            self.templates = {}
-
-    def load(self, obj: str) -> Template:
-        raise NotImplementedError
-
-
 class StringLoader(_Loader):
     def __init__(self, name: str=STR_NAME, **kwargs):
         super(StringLoader, self).__init__(**kwargs)
@@ -607,7 +605,7 @@ class StringLoader(_Loader):
     def load(self, s: str):
         if self.name not in self.templates:
             with self.lock:
-                self.templates[self.name] = Template(s, self.name, loader=self)
+                self.templates[self.name] = Template(s, self.name, self.autoescape, self)
         return self.templates[self.name]
 
 
@@ -621,5 +619,5 @@ class FileLoader(_Loader):
             with self.lock:
                 file_path = os.path.abspath(os.path.join(self.path, name))
                 with open(file_path, mode='r', encoding=ENCODING) as f:
-                    self.templates[name] = Template(f.read(), name, loader=self)
+                    self.templates[name] = Template(f.read(), name, self.autoescape, self)
         return self.templates[name]
