@@ -247,7 +247,7 @@ class _Expression(_Node):
         self.template.writer.write_line(f'tt_tmp = {self.exp}')
         self.template.writer.write_line('if isinstance(tt_tmp, str): tt_tmp = tt_str(tt_tmp)')
         if self.template.autoescape is not None:
-            self.template.writer.write_line(f'tt_tmp = tt_str(autoescape_{id(self.template.autoescape)}(tt_tmp))')
+            self.template.writer.write_line(f'tt_tmp = tt_str({self.template.autoescape}(tt_tmp))')
         self.template.writer.write_line('tt_append(tt_tmp)')
 
 
@@ -312,7 +312,7 @@ class _StatementAutoescape(_StatementInline):
             _ns = self.template.namespace
             if self.name not in _ns:
                 raise TemplateError(f'Unknown autoescape function "{self.name}".')
-            self.template.autoescape = _ns.setdefault(f'autoescape_{id(_ns[self.name])}', _ns[self.name])
+            self.template.autoescape = _ns[self.name]
 
 
 class _StatementIf(_Statement):
@@ -325,7 +325,7 @@ class _StatementIf(_Statement):
         self.stats = {}
         _m = self.template.reader.consume(self.regex)
         while _m:
-            self.stats[_m.group(1)] = self.template.parser.parse(_m.group(2))
+            self.stats[_m.group(1)] = self.template.parser.parse()
             _m = self.template.reader.consume(self.regex)
         else:
             self.template.reader.consume(self.regex_end)
@@ -410,7 +410,7 @@ class _StatementBlock(_Statement):
 
     def find_blocks(self, loader, named_blocks):
         named_blocks[self.name] = self
-        _Node.find_blocks(self, loader, named_blocks)
+        _Node.find_named_blocks(self, loader, named_blocks)
 
     def generate(self):
         if self.name not in self.template.cache:
@@ -520,6 +520,7 @@ class Template:
     regex_operator = re.compile(rf'{_Node.tag[0]}%{WS}([a-zA-Z0-9_]+)')
 
     def __init__(self, raw: str, name: str=STR_NAME, autoescape: typing.Callable=None, loader=None):
+        self._auto_escape = None
         self.namespace = {
             'tt_str': lambda s: s.decode(ENCODING) if isinstance(s, bytes) else str(s),
             'html_escape': escape,
@@ -532,8 +533,6 @@ class Template:
         if loader and loader.namespace:
             self.namespace.update(loader.namespace)
         self.autoescape = loader.autoescape if loader and loader.autoescape else autoescape
-        if self.autoescape:
-            self.namespace.setdefault(f'autoescape_{id(self.autoescape)}', self.autoescape)
         self.reader = _Reader(raw)
         self.parser = _Parser(self)
         self.file = _File(body=_Body(self.parser.parse(), template=self), template=self)
@@ -551,6 +550,18 @@ class Template:
             self.compiled = self.writer.output(f"{self.name.replace('.', '_')}.gen.py")
         finally:
             self.writer.close()
+
+    @property
+    def autoescape(self):
+        if self._auto_escape:
+            return f'tt_auto_escape_{id(self._auto_escape)}'
+        return None
+
+    @autoescape.setter
+    def autoescape(self, func):
+        self._auto_escape = func
+        if func:
+            self.namespace.setdefault(f'tt_auto_escape_{id(func)}', func)
 
     def get_ancestors(self, loader):
         ancestors = [self.file]
