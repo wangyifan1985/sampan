@@ -316,8 +316,7 @@ class _StatementAutoescape(_StatementInline):
 
 
 class _StatementIf(_Statement):
-    regex = re.compile(rf'{_Statement.tag[0]}{WS}((?:if|else|elif).*?){WS}{_Statement.tag[1]}'
-                       rf'((?:(?!{_Statement.tag[0]}{WS}(?:else|elif|end)).)*)', RE_FLAGS)
+    regex = re.compile(rf'{_Statement.tag[0]}{WS}((?:if|else|elif).*?){WS}{_Statement.tag[1]}', RE_FLAGS)
     regex_end = re.compile(rf'{_Statement.tag[0]}{WS}end{WS}{_Statement.tag[1]}')
 
     def __init__(self, **kwargs):
@@ -325,7 +324,7 @@ class _StatementIf(_Statement):
         self.stats = {}
         _m = self.template.reader.consume(self.regex)
         while _m:
-            self.stats[_m.group(1)] = self.template.parser.parse()
+            self.stats[_m.group(1)] = _Body(chunks=self.template.parser.parse(), template=self.template)
             _m = self.template.reader.consume(self.regex)
         else:
             self.template.reader.consume(self.regex_end)
@@ -446,6 +445,19 @@ class _Parser:
         self.template = template
         self._in_loop = in_loop
         self._in_block = in_block
+        self._in_nested = 0
+
+    def in_nested(self):
+        class InNested:
+            def __enter__(_):
+                self._in_nested += 1
+                return self
+
+            def __exit__(_, *args):
+                assert self._in_nested > 0
+                self._in_nested -= 1
+
+        return InNested()
 
     def in_loop(self):
         class InLoop:
@@ -470,7 +482,7 @@ class _Parser:
         return InBlock()
 
     def parse(self) -> typing.List[_Node]:
-        chunks = []
+
         while self.template.reader.remain() > 0:
             m = self.template.reader.match(self.template.regex_tag)
             if m:
@@ -481,6 +493,9 @@ class _Parser:
                     chunks.append(_Expression(template=self.template))
                 elif tag == '%':
                     operator = self.template.reader.match(self.template.regex_operator).group(1)
+                    if operator == 'end':
+                        if self._in_nested == 0:
+                            return chunks
                     if operator in ('import', 'from'):
                         chunks.append(_StatementInline(template=self.template))
                     elif operator in ('break', 'continue'):
