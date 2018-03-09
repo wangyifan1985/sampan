@@ -2,9 +2,6 @@
 # coding: utf-8
 
 import re
-import io
-import os
-import time
 import sys
 import typing
 import time
@@ -12,13 +9,7 @@ from collections import OrderedDict, abc
 
 """ A Python implementation for java.util.Properties """
 
-
-__author__ = ['Yifan Wang <yifan_wang@silanis.com>']
-__copyright__ = "Copyright (C) 2018, Yifan WANG"
-__license__ = "MIT"
-__version__ = '0.1.0'
-__description__ = 'Java Properties file tools'
-__status__ = "Internal"
+__all__ = ['Properties']
 
 
 # Constants ###################################################################
@@ -35,12 +26,38 @@ class PropertiesError(Exception):
 
 # Properties ##################################################################
 ###############################################################################
-
-
 class Properties:
     re_property = re.compile(r'(.+?)(?<!\\)(?:\s*[=|:]\s*)(.*)')
     re_property_space = re.compile(r'(.+?)(?<!\\)(?:[ ]+)(.+)')
     re_tail = re.compile(r'([\\]+)$')
+
+    # shamed copy from "jproperties"
+    @staticmethod
+    def unescape(value):
+        ret = []
+        backslash = False
+        for c in value:
+            if backslash:
+                if c == "u":
+                    # fall through to native unicode_escape
+                    ret.append(r"\u")
+                elif c == "t":
+                    ret.append("\t")
+                elif c == "r":
+                    ret.append("\r")
+                elif c == "n":
+                    ret.append("\n")
+                elif c == "f":
+                    ret.append("\f")
+                else:
+                    ret.append(c)
+                backslash = False
+            elif c == "\\":
+                backslash = True
+            else:
+                ret.append(c)
+        ret = "".join(ret).encode("utf-8").decode("unicode_escape")
+        return ret
 
     def __init__(self, defaults=None):
         self._props = OrderedDict()
@@ -97,20 +114,15 @@ class Properties:
         return self._props.get(key)
 
     def list(self, out=sys.stdout):
+        print('-- listing properties --', file=out)
         for key, value in self._props.items():
-            print(''.join((key, '=', value)), out)
+            print(''.join((key, '=', value)), file=out)
 
     def propertyNames(self):
         return self._props.keys()
 
     def stringPropertyNames(self):
         return set(self._props.keys())
-
-    def escape(self, value: str):
-        return value.replace(':', '\:').replace('=', '\=')
-
-    def unescape(self, value: str):
-        return value.replace('\:', ':').replace('\=', '=')
 
     def load(self, ins: typing.IO):
         lineno = 0
@@ -120,8 +132,8 @@ class Properties:
             line = line.strip()
             if not line or line.startswith('#') or line.startswith('!'):
                 continue
-            while line.endswith(r'\\'):
-                if len(self.re_tail.fullmatch(line).group(1)) % 2 == 1:
+            while line.endswith('\\'):
+                if len(self.re_tail.search(line).group(1)) % 2 == 1:
                     line = line[:-1] + next(lines).strip()
                     lineno += 1
             m = self.re_property.match(line)
@@ -135,18 +147,16 @@ class Properties:
                     value = m.group(2)
                 else:
                     raise PropertiesError(f'Illegal property at line: {lineno}')
-            self.setProperty(key, value)
+            self.setProperty(self.unescape(key), self.unescape(value))
 
     def store(self, out, comments: str=None):
         lines = []
         if comments:
-            lines.append(''.join(('#', comments)))
-        lines.append(''.join(('#', time.strftime(DMT, time.gmtime()))))
+            lines.append(''.join(('# ', comments)))
+        lines.append(''.join(('# ', time.strftime(DMT, time.gmtime()))))
         for k, v in self._props.items():
             lines.append(f'{k}={v}')
         if 'b' in out.mode:
             out.write('\n'.encode(ENCODING).join([s.encode(ENCODING) for s in lines]))
         else:
             out.write('\n'.join(lines))
-
-

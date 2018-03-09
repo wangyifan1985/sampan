@@ -3,11 +3,10 @@
 
 
 __author__ = ['Yifan Wang <yifan_wang@silanis.com>']
-__copyright__ = "Copyright (C) 2017, The Sampan Authors"
+__copyright__ = "Copyright (C) 2016, The Sampan Authors"
 __license__ = "MIT"
-__version__ = '0.1.1'
-__description__ = 'python web toolkit'
-__status__ = "Internal"
+__version__ = '0.2.1'
+__description__ = 'The Python utility library'
 
 
 # Check Environment ###########################################################

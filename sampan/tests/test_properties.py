@@ -3,9 +3,6 @@
 
 import os
 import pathlib
-from pprint import pprint
-import re
-import sys
 from io import StringIO
 from unittest import TestCase
 from tempfile import NamedTemporaryFile
@@ -13,6 +10,7 @@ from sampan.properties import Properties
 
 
 class TestProperties(TestCase):
+    TEST_PROPERTIES_FILE = os.path.join(str(pathlib.Path(__file__).parent), 'resources', 'test.properties')
 
     def test_property_node_update(self):
         s = "key = value"
@@ -63,12 +61,18 @@ class TestProperties(TestCase):
         self.assertTrue("a" not in props)
         self.assertTrue(props == Properties(dict([("c", "d"), ("e", "f")])))
 
-    def test_str(self):
+    def test_load(self):
         d = dict([("a", "b"), ("c", "d"), ("e", "f")])
         props = Properties(d)
         props2 = Properties()
         props2.load(StringIO('\n'.join([f'{k}={v}' for k, v in props._props.items()])))
         self.assertEqual(props, props2)
+
+    def test_load_tail(self):
+        props = Properties()
+        with open(self.TEST_PROPERTIES_FILE, mode='r') as f:
+            props.load(f)
+        self.assertEqual('Welcome to Wikipedia!', props.getProperty('message'))
 
     def test_store(self):
         properties = """foo : bar\nbar : baz\n"""
@@ -78,5 +82,19 @@ class TestProperties(TestCase):
         with NamedTemporaryFile(delete=False, mode='w') as f:
             p.store(f)
         with open(f.name) as f:
+            p2.load(f)
+        self.assertEqual(p, p2)
+
+    def test_store_comments(self):
+        properties = """foo : bar\nbar : baz\n"""
+        comment = 'This is comments'
+        p = Properties()
+        p2 = Properties()
+        p.load(StringIO(properties))
+        with NamedTemporaryFile(delete=False, mode='w') as f:
+            p.store(f, comments=comment)
+        with open(f.name) as f:
+            self.assertEqual(f'# {comment}', f.readline().strip())
+            f.seek(0, 0)
             p2.load(f)
         self.assertEqual(p, p2)
