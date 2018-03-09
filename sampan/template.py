@@ -166,14 +166,14 @@ if you need to include a literal ``{{``, ``{%``, or ``{#`` in the output.
 import datetime
 import linecache
 import os
-import sys
+import re
+import json
 import threading
 from io import StringIO
 from html import escape
 from urllib.parse import quote
 from . import SampanError
 from .log import get_logger
-from .util import ObjectDict, to_str, json_dumps, squeeze
 
 
 __all__ = ['Template', 'TemplateError', 'StringLoader', 'FileLoader']
@@ -203,6 +203,39 @@ class TemplateError(SampanError):
 
     def __str__(self):
         return '%s at %s:%d' % (self.message, self.filename, self.lineno)
+
+
+# Utilities ###################################################################
+###############################################################################
+class ObjectDict(dict):
+    """Makes a dictionary behave like an object, with attribute-style access.
+        """
+
+    def __getattr__(self, k):
+        try:
+            return self[k]
+        except KeyError:
+            raise AttributeError(k)
+
+    def __setattr__(self, k, v):
+        self[k] = v
+
+
+def squeeze(s):
+    """Replace all sequences of whitespace chars with a single space."""
+    return re.sub(r"[\x00-\x20]+", " ", s).strip()
+
+
+def to_str(_bytes, encoding='utf8'):
+    if not isinstance(_bytes, bytes):
+        if isinstance(_bytes, str):
+            return _bytes
+        raise TypeError
+    return _bytes.decode(encoding)
+
+
+def json_dumps(obj):
+    return json.dumps(obj)
 
 
 # Template ####################################################################

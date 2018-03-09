@@ -52,7 +52,6 @@ from html import escape
 from urllib.parse import quote
 from json import dumps
 from . import SampanError, ENCODING
-from .util import to_str
 
 __all__ = ['Template', 'TemplateError', 'Tag', 'Node']
 
@@ -88,6 +87,16 @@ class TemplateParseError(TemplateError):
     def __str__(self):
         line, col = self.linecol(self.reader.s, self.reader.pos)
         return ''.join((self.msg, 'line ', line, ' - ', 'column ', col))
+
+
+# Utilities ###################################################################
+###############################################################################
+def to_str(_bytes, encoding='utf8'):
+    if not isinstance(_bytes, bytes):
+        if isinstance(_bytes, str):
+            return _bytes
+        raise TypeError
+    return _bytes.decode(encoding)
 
 
 # Template ####################################################################
