@@ -75,11 +75,8 @@ class TestProperties(TestCase):
         p = Properties()
         p2 = Properties()
         p.load(StringIO(properties))
-        with NamedTemporaryFile(delete=False) as f:
+        with NamedTemporaryFile(delete=False, mode='w') as f:
             p.store(f)
-            print(f.read())
+        with open(f.name) as f:
             p2.load(f)
-        os.remove(f.name)
-        print(p)
-        print(p2)
         self.assertEqual(p, p2)

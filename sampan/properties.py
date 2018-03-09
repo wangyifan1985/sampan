@@ -3,6 +3,7 @@
 
 import re
 import io
+import os
 import time
 import sys
 import typing
@@ -136,11 +137,16 @@ class Properties:
                     raise PropertiesError(f'Illegal property at line: {lineno}')
             self.setProperty(key, value)
 
-    def store(self, writer, comments: str=None):
+    def store(self, out, comments: str=None):
         lines = []
         if comments:
-            lines.append(''.join(('#', comments)).encode(ENCODING))
-        lines.append(''.join(('#', time.strftime(DMT, time.gmtime()))).encode(ENCODING))
+            lines.append(''.join(('#', comments)))
+        lines.append(''.join(('#', time.strftime(DMT, time.gmtime()))))
         for k, v in self._props.items():
-            lines.append(f'{k}={v}'.encode(ENCODING))
-        writer.writelines(lines)
+            lines.append(f'{k}={v}')
+        if 'b' in out.mode:
+            out.write('\n'.encode(ENCODING).join([s.encode(ENCODING) for s in lines]))
+        else:
+            out.write('\n'.join(lines))
+
+
