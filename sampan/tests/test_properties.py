@@ -8,10 +8,24 @@ import re
 import sys
 from io import StringIO
 from unittest import TestCase
-from ..properties import Properties
+from tempfile import NamedTemporaryFile
+from sampan.properties import Properties
 
 
 class TestProperties(TestCase):
+
+    def test_property_node_update(self):
+        s = "key = value"
+        props = Properties()
+        props.load(StringIO(s))
+        props["key"] = "another_value"
+        print(str(props))
+        self.assertTrue(str(props) == "{key=another_value}")
+
+    def test_iterable_properties(self):
+        d = dict([("a", "b"), ("c", "d"), ("e", "f")])
+        props = Properties(d)
+        self.assertEqual([key for key in props], list(d.keys()))
 
     def test_len(self):
         items = [("a", "b"), ("c", "d"), ("e", "f")]
@@ -52,4 +66,20 @@ class TestProperties(TestCase):
     def test_str(self):
         d = dict([("a", "b"), ("c", "d"), ("e", "f")])
         props = Properties(d)
-        print(str(props))
+        props2 = Properties()
+        props2.load(StringIO('\n'.join([f'{k}={v}' for k, v in props._props.items()])))
+        self.assertEqual(props, props2)
+
+    def test_store(self):
+        properties = """foo : bar\nbar : baz\n"""
+        p = Properties()
+        p2 = Properties()
+        p.load(StringIO(properties))
+        with NamedTemporaryFile(delete=False) as f:
+            p.store(f)
+            print(f.read())
+            p2.load(f)
+        os.remove(f.name)
+        print(p)
+        print(p2)
+        self.assertEqual(p, p2)

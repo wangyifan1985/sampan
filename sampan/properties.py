@@ -84,6 +84,9 @@ class Properties:
         s = ''.join((s[:-2], '}'))
         return s
 
+    def __iter__(self):
+        return iter(self._props)
+
     def setProperty(self, key: str, value: str):
         self._props[key] = value
 
@@ -133,8 +136,11 @@ class Properties:
                     raise PropertiesError(f'Illegal property at line: {lineno}')
             self.setProperty(key, value)
 
-    def store(self, writer, comments: str):
+    def store(self, writer, comments: str=None):
+        lines = []
         if comments:
-            writer.writeline(''.join(('#', comments)))
-        writer.writeline(''.join(('#', time.strftime(DMT, time.gmtime()))))
-        writer.writeline(str(self))
+            lines.append(''.join(('#', comments)).encode(ENCODING))
+        lines.append(''.join(('#', time.strftime(DMT, time.gmtime()))).encode(ENCODING))
+        for k, v in self._props.items():
+            lines.append(f'{k}={v}'.encode(ENCODING))
+        writer.writelines(lines)
