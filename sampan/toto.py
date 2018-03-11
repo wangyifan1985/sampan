@@ -3,7 +3,10 @@
 import fileinput
 import subprocess
 import time
-
+import os
+import pathlib
+import csv
+from .properties import Properties
 
 def check_java_home(filename, java_home):
     with fileinput.FileInput(filename, inplace=True, backup='.bak') as file:
@@ -31,5 +34,21 @@ def exec_command(*args):
         # The run_command() function is responsible for logging STDERR
         print("Error: " + str(err))
 
-for line in exec_command(cmd):
-    print(line)
+#for line in exec_command(cmd):
+#    print(line)
+
+def create_properties_file(filename, props, **kwargs):
+    props = Properties(props)
+    for k, v in kwargs:
+        props.setProperty(k, v)
+    with open(filename, mode='w') as f:
+        props.store(f)
+
+
+def get_samples(filename):
+    with open(filename, newline='') as f:
+        return csv.reader(f)
+
+
+    
+
