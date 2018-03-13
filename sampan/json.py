@@ -820,8 +820,7 @@ class SkipNoneFilter(Filter):
                 continue
             else:
                 raise JsonFilterError(s, pos, 'Can not squeeze json "object" string: ')
-        js.write('}')
-        return js.getvalue(), end + 1
+        return js.getvalue().rstrip(', ') + '}', end + 1
 
 
 _skip_none_filter = SkipNoneFilter()
