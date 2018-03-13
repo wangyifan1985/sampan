@@ -91,6 +91,17 @@ class JsonFormatError(JsonError):
         return ''.join((self.msg, line, ' : ', col))
 
 
+class JsonFilterError(JsonError):
+    def __init__(self, s: str, pos: int, msg: str='Can not filter json string: '):
+        self.s = s
+        self.pos = pos
+        self.msg = msg
+
+    def __str__(self):
+        line, col = self.linecol(self.s, self.pos)
+        return ''.join((self.msg, line, ' : ', col))
+
+
 # Encoders ####################################################################
 ###############################################################################
 class Encoder:
@@ -658,6 +669,164 @@ class DefaultFormatter(Formatter):
 _default_formatter = DefaultFormatter()
 
 
+# Filter ######################################################################
+###############################################################################
+class Filter:
+    def squeeze(self, s: str):
+        if not s or not isinstance(s, str):
+            raise JsonFilterError(s, 0, 'Only "str" type is acceptable: ')
+        js = StringIO()
+        pos = _default_decoder.utf8_bom_re.match(s).end()
+        pos = _default_decoder.skip_whitespace(s, pos)
+        js.write(s[0: pos])
+        obj, pos = self.scan(s, pos)
+        js.write(obj)
+        if _default_decoder.skip_whitespace(s, pos) != len(s):
+            raise JsonFilterError(s, 0, 'Incorrect end of json string: ')
+        js.write(s[pos:])
+        return js.getvalue()
+
+    def scan(self, s: str, pos: int) -> Tuple[str, int]:
+        pos = _default_decoder.skip_whitespace(s, pos)
+        if s[pos] == 'n':
+            return self.squeeze_null(s, pos)
+        elif s[pos] == 't' or s[pos] == 'f':
+            return self.squeeze_boolean(s, pos)
+        elif s[pos] in '-0123456789':
+            return self.squeeze_number(s, pos)
+        elif s[pos] == '"':
+            return self.squeeze_string(s, pos)
+        elif s[pos] == '[':
+            return self.squeeze_array(s, pos)
+        elif s[pos] == '{':
+            return self.squeeze_object(s, pos)
+        else:
+            raise JsonFormatError(s, pos)
+
+    def squeeze_null(self, s: str, pos: int) -> Tuple[str, int]:
+        m = _default_decoder.null_re.match(s, pos)
+        if m is None:
+            raise JsonFormatError(s, pos, 'Can not squeeze json "null" string: ')
+        return m.group(), m.end()
+
+    def squeeze_boolean(self, s: str, pos: int) -> Tuple[str, int]:
+        m = _default_decoder.boolean_re.match(s, pos)
+        if m is None:
+            raise JsonFormatError(s, pos, 'Can not squeeze json "boolean" string: ')
+        return m.group(), m.end()
+
+    def squeeze_number(self, s: str, pos: int) -> Tuple[str, int]:
+        m = _default_decoder.number_re.match(s, pos)
+        if m is None:
+            raise JsonFormatError(s, pos, 'Can not squeeze json "number" string: ')
+        return m.group(), m.end()
+
+    def squeeze_string(self, s: str, pos: int) -> Tuple[str, int]:
+        end = pos + 1
+        while True:
+            m = _default_decoder.chunk_str_re.match(s, end)
+            if m is None:
+                raise JsonFormatError(s, pos, 'Can not squeeze json "string" string: ')
+            _, term = m.groups()
+            end = m.end()
+            if term == '"':
+                break
+            else:
+                end += 5 if s[end] == 'u' else 1
+        return s[pos: end], end
+
+    def squeeze_array(self, s: str, pos: int) -> Tuple[str, int]:
+        end = _default_decoder.skip_whitespace(s, pos+1)
+        if s[end] == ']':
+            end += 1
+            return s[pos: end], end
+        js = StringIO()
+        js.write(s[pos])
+        while True:
+            value, end = self.scan(s, end)
+            js.write(value)
+            end = _default_decoder.skip_whitespace(s, end)
+            if s[end] == ']':
+                break
+            elif s[end] == ',':
+                end += 1
+                js.write(',')
+                continue
+            else:
+                raise JsonFilterError(s, pos, 'Can not squeeze json "array" string: ')
+        js.write(']')
+        return js.getvalue(), end + 1
+
+    def squeeze_object(self, s: str, pos: int) -> Tuple[str, int]:
+        end = _default_decoder.skip_whitespace(s, pos+1)
+        if s[end] == '}':
+            end += 1
+            return s[pos: end], end
+        js = StringIO()
+        js.write(s[pos])
+        while True:
+            end = _default_decoder.skip_whitespace(s, end)
+            key, end = self.squeeze_string(s, end)
+            end = _default_decoder.skip_whitespace(s, end)
+            if s[end] != ':':
+                raise JsonFilterError(s, pos, 'Can not squeeze json "object" string: ')
+            value, end = self.scan(s, end + 1)
+            js.write(''.join((key, ':', value.lstrip())))
+            end = _default_decoder.skip_whitespace(s, end)
+            if s[end] == '}':
+                break
+            elif s[end] == ',':
+                end += 1
+                js.write(',')
+                continue
+            else:
+                raise JsonFilterError(s, pos, 'Can not squeeze json "object" string: ')
+        js.write('}')
+        return js.getvalue(), end + 1
+
+
+class SkipNoneFilter(Filter):
+    def __init__(self, skip_none=True):
+        super(SkipNoneFilter, self).__init__()
+        self.skip_none = skip_none
+
+    def squeeze_object(self, s: str, pos: int) -> Tuple[str, int]:
+        end = _default_decoder.skip_whitespace(s, pos+1)
+        if s[end] == '}':
+            end += 1
+            return s[pos: end], end
+        js = StringIO()
+        js.write(s[pos])
+        while True:
+            end = _default_decoder.skip_whitespace(s, end)
+            key, end = self.squeeze_string(s, end)
+            end = _default_decoder.skip_whitespace(s, end)
+            if s[end] != ':':
+                raise JsonFilterError(s, pos, 'Can not squeeze json "object" string: ')
+            value, end = self.scan(s, end + 1)
+            value = value.lstrip()
+            if self.skip_none and value == 'null':
+                kw = ''
+            else:
+                kw = ''.join((key, ': ', value))
+            js.write(kw)
+            end = _default_decoder.skip_whitespace(s, end)
+            if s[end] == '}':
+                break
+            elif s[end] == ',':
+                end += 1
+                if kw:
+                    js.write(', ')
+                continue
+            else:
+                raise JsonFilterError(s, pos, 'Can not squeeze json "object" string: ')
+        js.write('}')
+        return js.getvalue(), end + 1
+
+
+_skip_none_filter = SkipNoneFilter()
+
+
 # APIs ########################################################################
 ###############################################################################
 def formats(s: str, align: int=0, indent: int=4, item_sep: str=',\r\n', key_sep: str=': ', eol: str='\r\n') -> str:
@@ -666,16 +835,18 @@ def formats(s: str, align: int=0, indent: int=4, item_sep: str=',\r\n', key_sep:
     return DefaultFormatter(align=align, indent=indent, item_sep=item_sep, key_sep=key_sep, eol=eol).format(s)
 
 
-def dumps(obj: Any, encoding: str=JSON_ENCODING, cls: Type[Encoder]=CustomEncoder, indent: int=None) -> str:
+def dumps(obj: Any, encoding: str=JSON_ENCODING, cls: Type[Encoder]=CustomEncoder, indent: int=None, skip_none=False) -> str:
     _encoder = _default_encoder if encoding == JSON_ENCODING and cls is BasicEncoder else cls(encoding)
     js = _encoder.encode(obj)
+    if skip_none:
+        js = _skip_none_filter.squeeze(js)
     if indent is not None:
         return formats(js)
     return js
 
 
-def dump(obj: Any, fp: TextIO, encoding: str=JSON_ENCODING, cls: Type[Encoder]=CustomEncoder, indent: int=None):
-    fp.write(dumps(obj=obj, encoding=encoding, cls=cls, indent=indent))
+def dump(obj: Any, fp: TextIO, encoding: str=JSON_ENCODING, cls: Type[Encoder]=CustomEncoder, indent: int=None, skip_none=False):
+    fp.write(dumps(obj=obj, encoding=encoding, cls=cls, indent=indent, skip_none=skip_none))
 
 
 def loads(s: str, encoding: str=JSON_ENCODING, cls: Type[Decoder]=CustomDecoder, clazz: type=None) -> Any:
