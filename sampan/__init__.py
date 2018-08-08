@@ -20,14 +20,4 @@ def check_environment():
 check_environment()
 
 
-# Errors ######################################################################
-###############################################################################
-class SampanError(Exception):
-    @staticmethod
-    def linecol(s: str, pos: int):
-        line = s.count('\n', 0, pos) + 1
-        col = pos + 1 if line == 1 else pos - s.rindex('\n', 0, pos)
-        return str(line), str(col)
-
-
 

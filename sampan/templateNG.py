@@ -51,13 +51,13 @@ from io import StringIO
 from html import escape
 from urllib.parse import quote
 from json import dumps
-from . import SampanError, ENCODING
 
-__all__ = ['Template', 'TemplateError', 'Tag', 'Node']
+__all__ = ['Template', 'TemplateError', 'StringLoader', 'FileLoader']
 
 # Constants ###################################################################
 ###############################################################################
 INDENT = 4
+ENCODING = 'utf-8'
 STR_NAME = '<string>'
 RE_FLAGS = re.MULTILINE | re.DOTALL
 WS = r'[ \t\n\r]*'
@@ -65,7 +65,7 @@ WS = r'[ \t\n\r]*'
 
 # Errors ######################################################################
 ###############################################################################
-class TemplateError(SampanError):
+class TemplateError(Exception):
     @staticmethod
     def linecol(s: str, pos: int):
         line = s.count('\n', 0, pos) + 1
@@ -216,7 +216,6 @@ class _File(_Node):
         self.template.writer.write_line('def tt_execute():')
         with self.template.writer.indent():
             self.template.writer.write_line('tt_buffer = []')
-            self.template.writer.write_line('tt_append = tt_buffer.append')
             self.body.generate()
             self.template.writer.write_line("return tt_str('').join(tt_buffer)")
 
@@ -229,7 +228,7 @@ class _Text(_Node):
         self.text = self.template.reader.consume(self.regex).group()
 
     def generate(self):
-        self.template.writer.write_line(f'tt_append({repr(to_str(self.text))})')
+        self.template.writer.write_line(f'tt_buffer.append({repr(to_str(self.text))})')
 
 
 class _Comment(_Node):
@@ -257,7 +256,7 @@ class _Expression(_Node):
         self.template.writer.write_line('if isinstance(tt_tmp, str): tt_tmp = tt_str(tt_tmp)')
         if self.template.autoescape is not None:
             self.template.writer.write_line(f'tt_tmp = tt_str({self.template.autoescape}(tt_tmp))')
-        self.template.writer.write_line('tt_append(tt_tmp)')
+        self.template.writer.write_line('tt_buffer.append(tt_tmp)')
 
 
 class _Statement(_Node):
@@ -306,7 +305,7 @@ class _StatementRaw(_StatementInline):
     def generate(self):
         self.template.writer.write_line(f'tt_tmp = {self.exp}')
         self.template.writer.write_line('if isinstance(tt_tmp, str): tt_tmp = tt_str(tt_tmp)')
-        self.template.writer.write_line('tt_append(tt_tmp)')
+        self.template.writer.write_line('tt_buffer.append(tt_tmp)')
 
 
 class _StatementAutoescape(_StatementInline):
@@ -491,7 +490,7 @@ class _Parser:
         return InBlock()
 
     def parse(self) -> typing.List[_Node]:
-
+        chunks = []
         while self.template.reader.remain() > 0:
             m = self.template.reader.match(self.template.regex_tag)
             if m:
@@ -558,8 +557,7 @@ class Template:
             self.namespace.update(loader.namespace)
         self.autoescape = loader.autoescape if loader and loader.autoescape else autoescape
         self.reader = _Reader(raw)
-        self.parser = _Parser(self)
-        self.file = _File(body=_Body(self.parser.parse(), template=self), template=self)
+        self.file = _File(body=_Body(_Parser(self).parse(), template=self), template=self)
         print('+++++++++++++++')
         print(self.file.body.chunks)
         print('+++++++++++++++')

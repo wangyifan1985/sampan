@@ -36,7 +36,7 @@ __all__ = ['dump', 'dumps', 'load', 'loads', 'Encoder', 'Decoder', 'Formatter']
 
 # Constants ###################################################################
 ###############################################################################
-JSON_ENCODING = 'utf-8'
+ENCODING = 'utf-8'
 RE_FLAGS = re.MULTILINE | re.DOTALL
 
 
@@ -183,11 +183,11 @@ class BasicEncoder(Encoder):
         return _obj.getvalue()
 
 
-_default_encoder = BasicEncoder(JSON_ENCODING)
+_default_encoder = BasicEncoder(ENCODING)
 
 
 class AdvancedEncoder(BasicEncoder):
-    def __init__(self, encoding: str=JSON_ENCODING):
+    def __init__(self, encoding: str=ENCODING):
         super(AdvancedEncoder, self).__init__(encoding)
 
     def scan(self, obj: Any, throwable: bool=True) -> str:
@@ -226,7 +226,7 @@ class AdvancedEncoder(BasicEncoder):
 
 class CustomEncoder(AdvancedEncoder):
 
-    def __init__(self, encoding: str=JSON_ENCODING):
+    def __init__(self, encoding: str=ENCODING):
         super(CustomEncoder, self).__init__(encoding)
 
     def scan(self, obj: Any, throwable: bool=True) -> str:
@@ -424,7 +424,7 @@ class BasicDecoder(Decoder):
         return _obj, end + 1
 
 
-_default_decoder = BasicDecoder(JSON_ENCODING)
+_default_decoder = BasicDecoder(ENCODING)
 
 
 class AdvancedDecoder(BasicDecoder):
@@ -435,7 +435,7 @@ class AdvancedDecoder(BasicDecoder):
     datetime_re = re.compile(date_re.pattern + r'[T ]' + time_re.pattern +
                              r'(?P<tzinfo>Z|[+-][0-9]{2}(?::?[0-9]{2})?)?')
 
-    def __init__(self, encoding: str=JSON_ENCODING):
+    def __init__(self, encoding: str=ENCODING):
         super(AdvancedDecoder, self).__init__(encoding)
 
     def decode_string(self, s: str, pos: int):
@@ -482,7 +482,7 @@ class AdvancedDecoder(BasicDecoder):
 
 class CustomDecoder(AdvancedDecoder):
     
-    def __init__(self, encoding: str=JSON_ENCODING):
+    def __init__(self, encoding: str=ENCODING):
         super(CustomDecoder, self).__init__(encoding)
 
     def decode(self, s: str, clazz: type=None) -> Any:
@@ -834,8 +834,8 @@ def formats(s: str, align: int=0, indent: int=4, item_sep: str=',\r\n', key_sep:
     return DefaultFormatter(align=align, indent=indent, item_sep=item_sep, key_sep=key_sep, eol=eol).format(s)
 
 
-def dumps(obj: Any, encoding: str=JSON_ENCODING, cls: Type[Encoder]=CustomEncoder, indent: int=None, skip_none=False) -> str:
-    _encoder = _default_encoder if encoding == JSON_ENCODING and cls is BasicEncoder else cls(encoding)
+def dumps(obj: Any, encoding: str=ENCODING, cls: Type[Encoder]=CustomEncoder, indent: int=None, skip_none=False) -> str:
+    _encoder = _default_encoder if encoding == ENCODING and cls is BasicEncoder else cls(encoding)
     js = _encoder.encode(obj)
     if skip_none:
         js = _skip_none_filter.squeeze(js)
@@ -844,15 +844,15 @@ def dumps(obj: Any, encoding: str=JSON_ENCODING, cls: Type[Encoder]=CustomEncode
     return js
 
 
-def dump(obj: Any, fp: TextIO, encoding: str=JSON_ENCODING, cls: Type[Encoder]=CustomEncoder, indent: int=None, skip_none=False):
+def dump(obj: Any, fp: TextIO, encoding: str=ENCODING, cls: Type[Encoder]=CustomEncoder, indent: int=None, skip_none=False):
     fp.write(dumps(obj=obj, encoding=encoding, cls=cls, indent=indent, skip_none=skip_none))
 
 
-def loads(s: str, encoding: str=JSON_ENCODING, cls: Type[Decoder]=CustomDecoder, clazz: type=None) -> Any:
+def loads(s: str, encoding: str=ENCODING, cls: Type[Decoder]=CustomDecoder, clazz: type=None) -> Any:
     if isinstance(s, bytes):
         s = s.decode(encoding)
     if clazz is None:
-        if encoding == JSON_ENCODING and cls is BasicDecoder:
+        if encoding == ENCODING and cls is BasicDecoder:
             return _default_decoder.decode(s)
         else:
             return cls(encoding).decode(s)
@@ -860,5 +860,5 @@ def loads(s: str, encoding: str=JSON_ENCODING, cls: Type[Decoder]=CustomDecoder,
         return CustomDecoder(encoding).decode(s, clazz)
 
 
-def load(fp: TextIO, encoding: str=JSON_ENCODING, cls: Type[Decoder]=CustomDecoder, clazz: type=None) -> Any:
+def load(fp: TextIO, encoding: str=ENCODING, cls: Type[Decoder]=CustomDecoder, clazz: type=None) -> Any:
     return loads(fp.read(), encoding=encoding, cls=cls, clazz=clazz)

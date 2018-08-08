@@ -3,7 +3,6 @@
 
 from unittest import TestCase
 from ..templateNG import Template, _StatementIf
-from ..template import Template as T2
 from html import escape
 from pprint import pprint
 

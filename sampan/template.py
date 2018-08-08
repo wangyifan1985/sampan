@@ -172,7 +172,6 @@ import threading
 from io import StringIO
 from html import escape
 from urllib.parse import quote
-from . import SampanError
 from .log import get_logger
 
 
@@ -186,7 +185,7 @@ DEFAULT_STRING_NAME = '<string>'
 
 # Errors ######################################################################
 ###############################################################################
-class TemplateError(SampanError):
+class TemplateError(Exception):
     """Raised for template syntax errors.
         ``TemplateError`` instances have ``filename`` and ``lineno`` attributes
         indicating the position of the error.
